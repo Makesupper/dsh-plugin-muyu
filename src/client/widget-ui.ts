@@ -1,18 +1,15 @@
 /**
- * Muyu Floating Widget UI Component (QQ-Pet style floating companion)
+ * Muyu Floating Widget UI Component
  * Features:
- * - Real 3D Mallet & 3D Wooden Fish rendered from SceneKit assets!
- * - Realistic mallet angle holding (naturally tilted ~-32deg, hits down to +18deg on click).
- * - Fixed Stage Anchor: The speech bubble expands UPWARDS or is housed in a fixed-height layout,
- *   so the Muyu body NEVER jumps or shifts when sentences wrap into multiple lines!
- * - Smooth drag handle (dedicated drag pill, clicking fish won't drift or displace)
- * - Complete sentence recitation (continuous reading, not cut off by repeated taps)
- * - Built-in Merit Record Sheet (历劫功德簿)
- * - Built-in Sutra Library Selector (传世经典宝库)
- * - Expand / Collapse toggle without losing state
+ * - Clean, consolidated single-row capsule dock in expanded mode (Auto, Voice, Merit, Settings, Collapse)
+ * - Unified Zen Settings Sheet (禅修设置) with segmented tabs for Sutra, Sound Preset, and Voice
+ * - Mini Zen Mode when collapsed: draggable header pill + compact sutra bubble + mini wooden fish + expand button
+ * - Scoped DOM & full lifecycle cleanup on unmount()
  */
 
 import { MUYU_FISH_BASE64, MUYU_MALLET_BASE64 } from './muyu-texture-b64.js'
+import type { MuyuSoundType } from '../types.js'
+import type { SoundPresetOption } from './sound-player.js'
 
 export interface SutraItem {
   id: string
@@ -25,6 +22,7 @@ export interface MeritHistoryItem {
   dateKey: string
   displayDate: string
   count: number
+  tokens?: number
 }
 
 export interface VoiceItem {
@@ -41,14 +39,33 @@ export interface WidgetOptions {
   onToggleVoice?: (enabled: boolean) => void
   onSelectSutra?: (bookId: string) => void
   onSelectVoice?: (voiceId: string) => void
+  onSelectSound?: (soundId: MuyuSoundType) => void
   getVoiceList?: () => VoiceItem[]
   getCurrentVoiceId?: () => string
+  getSoundPresets?: () => SoundPresetOption[]
+  getCurrentSoundId?: () => MuyuSoundType
   sutraList: SutraItem[]
   currentBookId: string
-  getMeritRecords: () => { todayMerit: number; totalMerit: number; records: MeritHistoryItem[] }
+  initialVoiceEnabled?: boolean
+  getMeritRecords: () => {
+    todayMerit: number
+    totalMerit: number
+    todayTokens?: number
+    totalTokens?: number
+    pendingTokens?: number
+    records: MeritHistoryItem[]
+  }
 }
 
+let activeInstanceUnmount: (() => void) | null = null
+
 export function createMuyuFloatingPet(options: WidgetOptions) {
+  if (activeInstanceUnmount) {
+    try {
+      activeInstanceUnmount()
+    } catch {}
+    activeInstanceUnmount = null
+  }
   const existing = document.getElementById('dsh-muyu-floating-pet')
   if (existing) {
     existing.remove()
@@ -57,309 +74,451 @@ export function createMuyuFloatingPet(options: WidgetOptions) {
   const container = document.createElement('div')
   container.id = 'dsh-muyu-floating-pet'
   container.className = 'dsh-muyu-pet-root'
+  container.setAttribute('role', 'region')
+  container.setAttribute('aria-label', '电子木鱼禅修挂件')
 
   let isCollapsed = false
-  let voiceEnabled = true
+  let voiceEnabled = options.initialVoiceEnabled ?? true
+  let currentSettingsTab: 'sutra' | 'sound' | 'voice' = 'sutra'
+  const sparkTimers = new Set<ReturnType<typeof setTimeout>>()
 
   const style = document.createElement('style')
   style.textContent = `
     .dsh-muyu-pet-root {
+      --muyu-bg-surface: var(--dsw-alias-bg-surface, rgba(26, 18, 12, 0.94));
+      --muyu-bg-elevated: var(--dsw-alias-bg-elevated, #221912);
+      --muyu-border: var(--dsw-alias-border-default, rgba(212, 163, 89, 0.42));
+      --muyu-text-primary: var(--dsw-alias-text-primary, #f7e3b5);
+      --muyu-text-secondary: var(--dsw-alias-text-secondary, #dfba78);
+      --muyu-accent: var(--dsw-alias-accent-primary, #ffd700);
       position: fixed;
-      right: 32px;
-      bottom: 45px;
+      right: 28px;
+      bottom: 36px;
       z-index: 999999;
       display: flex;
       flex-direction: column;
       align-items: center;
       user-select: none;
       -webkit-user-select: none;
-      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "PingFang SC", "Hiragino Sans GB", sans-serif;
-      touch-action: none;
-      pointer-events: auto;
-      filter: drop-shadow(0 14px 34px rgba(0, 0, 0, 0.65));
+      font-family: -apple-system, BlinkMacSystemFont, "PingFang SC", "Microsoft YaHei", sans-serif;
+      transition: transform 0.18s ease;
     }
 
-    /* Fixed upward anchor container: Speech bubble grows UPWARD without pushing the Muyu down! */
+    /* Top anchor: drag handle + sutra bubble (always visible in both expanded & collapsed modes) */
     .dsh-muyu-header-anchor {
       position: relative;
-      width: 100%;
+      width: 228px;
+      min-height: 68px;
       display: flex;
       flex-direction: column;
-      align-items: center;
       justify-content: flex-end;
-      min-height: 28px;
-    }
-
-    /* Speech Bubble anchored above the fish */
-    .dsh-muyu-speech {
-      max-width: 260px;
-      min-width: 160px;
-      background: rgba(22, 17, 13, 0.96);
-      backdrop-filter: blur(16px);
-      -webkit-backdrop-filter: blur(16px);
-      color: #ffd88a;
-      border: 1px solid rgba(212, 163, 89, 0.6);
-      padding: 9px 15px;
-      border-radius: 14px;
-      font-size: 13px;
-      line-height: 1.48;
-      text-align: center;
-      margin-bottom: 10px;
-      box-shadow: 0 4px 20px rgba(0, 0, 0, 0.55);
-      position: relative;
-      animation: muyuSpeechFloat 3s ease-in-out infinite alternate;
-      pointer-events: none;
-      transition: opacity 0.2s ease-out;
-    }
-    .dsh-muyu-speech::after {
-      content: '';
-      position: absolute;
-      bottom: -6px;
-      left: 50%;
-      transform: translateX(-50%);
-      width: 0;
-      height: 0;
-      border-left: 6px solid transparent;
-      border-right: 6px solid transparent;
-      border-top: 6px solid rgba(22, 17, 13, 0.96);
-    }
-
-    /* Drag Handle Pill */
-    .dsh-muyu-drag-handle {
-      background: rgba(30, 24, 20, 0.9);
-      border: 1px solid rgba(212, 163, 89, 0.4);
-      color: #dfba78;
-      font-size: 11px;
-      padding: 2px 10px;
-      border-radius: 10px;
-      cursor: grab;
+      align-items: center;
       margin-bottom: 6px;
+      pointer-events: none;
+      transition: width 0.2s ease, min-height 0.2s ease;
+    }
+    .dsh-muyu-pet-root.is-collapsed .dsh-muyu-header-anchor {
+      width: 176px;
+      min-height: 48px;
+      margin-bottom: 4px;
+    }
+
+    .dsh-muyu-top-bar {
+      pointer-events: auto;
       display: flex;
       align-items: center;
       gap: 4px;
-      box-shadow: 0 2px 8px rgba(0, 0, 0, 0.35);
+      margin-bottom: 4px;
+    }
+
+    .dsh-muyu-drag-handle {
+      cursor: grab;
+      background: var(--muyu-bg-surface);
+      color: var(--muyu-text-secondary);
+      font-size: 10.5px;
+      padding: 2px 10px;
+      border-radius: 999px;
+      border: 1px solid var(--muyu-border);
+      box-shadow: 0 2px 6px rgba(0, 0, 0, 0.45);
+      display: inline-flex;
+      align-items: center;
+      gap: 4px;
+      white-space: nowrap;
+      transition: border-color 0.15s, color 0.15s;
+    }
+    .dsh-muyu-drag-handle:hover {
+      border-color: rgba(255, 215, 0, 0.65);
+      color: var(--muyu-accent);
     }
     .dsh-muyu-drag-handle:active {
       cursor: grabbing;
-      background: rgba(45, 35, 25, 0.95);
     }
 
-    /* Main 3D Wood Scene Stage (Strictly fixed dimensions so position is immutable) */
+    .dsh-muyu-collapse-pill {
+      cursor: pointer;
+      background: var(--muyu-bg-surface);
+      color: var(--muyu-text-secondary);
+      font-size: 10.5px;
+      padding: 2px 7px;
+      border-radius: 999px;
+      border: 1px solid var(--muyu-border);
+      box-shadow: 0 2px 6px rgba(0, 0, 0, 0.45);
+      line-height: 1.3;
+      transition: background 0.15s, color 0.15s, border-color 0.15s;
+    }
+    .dsh-muyu-collapse-pill:hover {
+      background: rgba(68, 48, 30, 0.95);
+      color: var(--muyu-accent);
+      border-color: rgba(255, 215, 0, 0.65);
+    }
+
+    .dsh-muyu-bubble {
+      pointer-events: auto;
+      max-width: 224px;
+      min-height: 26px;
+      max-height: 48px;
+      overflow: hidden;
+      padding: 5px 11px;
+      border-radius: 11px;
+      background: var(--muyu-bg-surface);
+      border: 1px solid var(--muyu-border);
+      color: var(--muyu-text-primary);
+      font-size: 11.5px;
+      line-height: 1.38;
+      text-align: center;
+      box-shadow: 0 6px 16px rgba(0, 0, 0, 0.48);
+      backdrop-filter: blur(8px);
+      display: -webkit-box;
+      -webkit-line-clamp: 2;
+      -webkit-box-orient: vertical;
+      transition: font-size 0.2s ease, padding 0.2s ease, max-width 0.2s ease;
+    }
+    .dsh-muyu-pet-root.is-collapsed .dsh-muyu-bubble {
+      max-width: 172px;
+      min-height: 20px;
+      max-height: 34px;
+      padding: 3px 8px;
+      font-size: 10px;
+      line-height: 1.3;
+      border-radius: 9px;
+      -webkit-line-clamp: 2;
+    }
+
+    /* 3D Wooden Fish Stage */
     .dsh-muyu-stage {
       position: relative;
-      width: 168px;
-      height: 124px;
-      cursor: none; /* Hide standard arrow to display authentic 3D Mallet */
+      width: 132px;
+      height: 94px;
+      border-radius: 24px;
+      background: radial-gradient(circle at 50% 42%, rgba(82, 54, 34, 0.92), rgba(24, 16, 10, 0.96));
+      border: 1.5px solid var(--muyu-border);
+      box-shadow: 0 10px 24px rgba(0, 0, 0, 0.62), inset 0 1px 6px rgba(255, 215, 138, 0.22);
       display: flex;
       align-items: center;
       justify-content: center;
-      border-radius: 28px;
-      background: radial-gradient(circle at 45% 40%, rgba(90, 48, 25, 0.35) 0%, rgba(18, 10, 5, 0.7) 85%);
-      border: 1px solid rgba(212, 163, 89, 0.38);
-      box-shadow: inset 0 2px 8px rgba(255, 215, 140, 0.18), 0 8px 24px rgba(0, 0, 0, 0.5);
-      overflow: visible;
-      flex-shrink: 0;
+      cursor: pointer;
+      transition: transform 0.12s ease, width 0.2s ease, height 0.2s ease, border-radius 0.2s ease;
+    }
+    .dsh-muyu-stage:focus-visible {
+      outline: 2px solid var(--muyu-accent);
+      outline-offset: 2px;
+    }
+    .dsh-muyu-pet-root.is-collapsed .dsh-muyu-stage {
+      width: 66px;
+      height: 52px;
+      border-radius: 18px;
     }
 
-    /* 3D Fish Body Asset */
     .dsh-muyu-fish-img {
-      width: 108px;
-      height: 70px;
+      width: 104px;
+      height: 68px;
       object-fit: contain;
       pointer-events: none;
-      filter: drop-shadow(0 6px 14px rgba(0, 0, 0, 0.75));
-      transition: transform 0.05s ease-out;
+      transition: transform 0.09s ease, width 0.2s ease, height 0.2s ease;
+      filter: drop-shadow(0 6px 10px rgba(0, 0, 0, 0.6));
+    }
+    .dsh-muyu-pet-root.is-collapsed .dsh-muyu-fish-img {
+      width: 52px;
+      height: 36px;
     }
 
-    /* Real 3D Mallet Asset: compact short wooden stick with round head */
     .dsh-muyu-mallet-img {
       position: absolute;
-      width: 52px;
-      height: 26px;
+      width: 76px;
+      height: 42px;
       object-fit: contain;
       pointer-events: none;
-      filter: drop-shadow(0 4px 8px rgba(0, 0, 0, 0.75));
-      /* Pivot around right handle grip: hammer head (left side) held up gracefully */
-      transform-origin: 90% 50%;
-      transform: translate(-88%, -50%) rotate(38deg);
-      transition: transform 0.06s cubic-bezier(0.175, 0.885, 0.32, 1.275);
-      z-index: 10;
+      display: none;
+      z-index: 5;
+      transform-origin: 85% 50%;
+      transform: translate(-88%, -50%) rotate(38deg) scale(1);
+      transition: transform 0.08s cubic-bezier(0.22, 1, 0.36, 1);
+      filter: drop-shadow(0 4px 8px rgba(0, 0, 0, 0.55));
+    }
+    .dsh-muyu-pet-root.is-collapsed .dsh-muyu-mallet-img {
+      width: 48px;
+      height: 27px;
+    }
+
+    .dsh-muyu-merit-badge {
+      position: absolute;
+      bottom: -8px;
+      background: linear-gradient(135deg, #422c18, #24170c);
+      color: var(--muyu-accent);
+      border: 1px solid rgba(255, 215, 0, 0.55);
+      border-radius: 999px;
+      padding: 1px 9px;
+      font-size: 10.5px;
+      font-weight: 600;
+      box-shadow: 0 2px 6px rgba(0, 0, 0, 0.5);
+      pointer-events: none;
+      white-space: nowrap;
+      transition: font-size 0.2s ease, padding 0.2s ease;
+    }
+    .dsh-muyu-pet-root.is-collapsed .dsh-muyu-merit-badge {
+      font-size: 9.5px;
+      padding: 0px 7px;
+      bottom: -7px;
+    }
+
+    /* Consolidated Single-Row Dock Capsule + Integrated Token Footer */
+    .dsh-muyu-dock-card {
+      margin-top: 11px;
+      background: var(--muyu-bg-surface);
+      border: 1px solid var(--muyu-border);
+      border-radius: 12px;
+      padding: 4px;
+      box-shadow: 0 6px 18px rgba(0, 0, 0, 0.48);
+      backdrop-filter: blur(8px);
+      display: flex;
+      flex-direction: column;
+      align-items: stretch;
+      gap: 3px;
+    }
+    .dsh-muyu-pet-root.is-collapsed .dsh-muyu-dock-card {
       display: none;
     }
 
-    /* Merit Badge */
-    .dsh-muyu-merit-badge {
-      position: absolute;
-      bottom: -6px;
-      background: linear-gradient(135deg, #d4a359, #b8860b);
-      color: #1a0f00;
-      font-size: 11px;
-      font-weight: 700;
-      padding: 1px 9px;
-      border-radius: 12px;
-      border: 1px solid #fce7b2;
-      box-shadow: 0 2px 6px rgba(0, 0, 0, 0.45);
-      letter-spacing: 0.5px;
-      z-index: 5;
-    }
-
-    /* Actions Bar */
     .dsh-muyu-toolbar {
       display: flex;
-      gap: 5px;
-      margin-top: 10px;
-      opacity: 0.92;
-      transition: opacity 0.2s;
-      flex-shrink: 0;
+      align-items: center;
+      justify-content: center;
+      gap: 3px;
+      white-space: nowrap;
     }
-    .dsh-muyu-toolbar:hover {
-      opacity: 1;
-    }
+
     .dsh-muyu-btn {
-      background: rgba(28, 23, 19, 0.92);
-      border: 1px solid rgba(212, 163, 89, 0.4);
-      color: #e6c88b;
-      font-size: 11px;
+      background: rgba(255, 255, 255, 0.03);
+      color: var(--muyu-text-secondary);
+      border: 1px solid transparent;
+      border-radius: 8px;
       padding: 3px 8px;
-      border-radius: 6px;
+      font-size: 11px;
       cursor: pointer;
-      backdrop-filter: blur(8px);
-      -webkit-backdrop-filter: blur(8px);
-      transition: all 0.15s;
+      display: inline-flex;
+      align-items: center;
+      gap: 3px;
+      transition: background 0.15s, color 0.15s, border-color 0.15s;
     }
-    .dsh-muyu-btn:hover {
-      background: rgba(212, 163, 89, 0.3);
-      border-color: #ffd88a;
-      color: #fff;
+    .dsh-muyu-btn:hover, .dsh-muyu-btn:focus-visible {
+      background: rgba(212, 163, 89, 0.18);
+      color: var(--muyu-accent);
+      border-color: rgba(255, 215, 0, 0.45);
+      outline: none;
+    }
+    .dsh-muyu-btn.is-active {
+      background: rgba(255, 215, 0, 0.15);
+      color: var(--muyu-accent);
+      border-color: rgba(255, 215, 0, 0.55);
+      font-weight: 600;
     }
 
-    /* Floating Golden Text Animation */
+    .dsh-muyu-token-bar {
+      font-size: 9.5px;
+      color: #c4a46e;
+      border-top: 1px solid rgba(212, 163, 89, 0.18);
+      padding: 2px 6px 1px;
+      text-align: center;
+      white-space: nowrap;
+      letter-spacing: 0.2px;
+      cursor: pointer;
+    }
+    .dsh-muyu-token-bar:hover {
+      color: var(--muyu-accent);
+    }
+
     .dsh-muyu-sparkle {
-      position: absolute;
-      color: #ffd700;
-      font-size: 18px;
-      font-weight: 800;
+      position: fixed;
+      transform: translate(-50%, -10px);
+      color: var(--muyu-accent);
+      font-size: 13px;
+      font-weight: 700;
+      text-shadow: 0 2px 8px rgba(0, 0, 0, 0.85), 0 0 8px rgba(255, 215, 0, 0.55);
       pointer-events: none;
-      animation: muyuRiseUp 0.85s ease-out forwards;
-      text-shadow: 0 0 10px rgba(255, 215, 0, 0.9), 0 0 20px rgba(255, 165, 0, 0.5);
-      z-index: 1000000;
+      z-index: 1000001;
+      animation: dsh-muyu-float-up 0.85s ease-out forwards;
+      white-space: nowrap;
     }
 
-    /* Modal Sheets (功德簿与经文库) */
+    @keyframes dsh-muyu-float-up {
+      0% { opacity: 1; transform: translate(-50%, -6px) scale(0.92); }
+      100% { opacity: 0; transform: translate(-50%, -44px) scale(1.08); }
+    }
+
+    /* Modal Dialog & Segmented Tabs */
     .dsh-muyu-modal-backdrop {
       position: fixed;
       inset: 0;
-      background: rgba(0, 0, 0, 0.65);
-      backdrop-filter: blur(8px);
-      -webkit-backdrop-filter: blur(8px);
-      z-index: 1000001;
+      background: rgba(0, 0, 0, 0.62);
+      z-index: 1000000;
       display: none;
       align-items: center;
       justify-content: center;
+      backdrop-filter: blur(3px);
     }
+
     .dsh-muyu-modal-card {
-      width: 420px;
-      max-height: 520px;
-      background: #17120e;
-      border: 1px solid rgba(212, 163, 89, 0.5);
-      border-radius: 16px;
-      color: #eeddbb;
+      width: 348px;
+      max-width: 90vw;
+      max-height: 76vh;
+      background: var(--muyu-bg-elevated);
+      border: 1px solid var(--muyu-border);
+      border-radius: 14px;
+      box-shadow: 0 16px 42px rgba(0, 0, 0, 0.75);
       display: flex;
       flex-direction: column;
-      box-shadow: 0 16px 40px rgba(0, 0, 0, 0.8);
       overflow: hidden;
-      font-size: 13px;
+      color: var(--muyu-text-primary);
     }
+
     .dsh-muyu-modal-header {
-      padding: 14px 18px;
-      background: #231b14;
-      border-bottom: 1px solid rgba(212, 163, 89, 0.3);
       display: flex;
       justify-content: space-between;
       align-items: center;
-      font-weight: bold;
-      font-size: 15px;
-      color: #f7d594;
+      padding: 11px 16px;
+      border-bottom: 1px solid rgba(212, 163, 89, 0.22);
+      font-weight: 600;
+      font-size: 13.5px;
+      color: var(--muyu-accent);
     }
+
     .dsh-muyu-modal-close {
+      background: transparent;
+      border: none;
       cursor: pointer;
-      color: #dfba78;
       font-size: 18px;
       line-height: 1;
+      color: var(--muyu-text-secondary);
       padding: 2px 6px;
+      border-radius: 6px;
     }
     .dsh-muyu-modal-close:hover {
       color: #fff;
     }
-    .dsh-muyu-modal-body {
-      padding: 16px 18px;
-      overflow-y: auto;
-      flex: 1;
+
+    .dsh-muyu-tabs {
+      display: flex;
+      gap: 4px;
+      padding: 8px 16px 0;
+      border-bottom: 1px solid rgba(212, 163, 89, 0.16);
+      background: rgba(0, 0, 0, 0.18);
     }
+
+    .dsh-muyu-tab-btn {
+      flex: 1;
+      background: transparent;
+      border: none;
+      border-bottom: 2px solid transparent;
+      color: #bba688;
+      font-size: 12px;
+      font-weight: 500;
+      padding: 6px 4px 8px;
+      cursor: pointer;
+      transition: color 0.15s, border-color 0.15s;
+    }
+    .dsh-muyu-tab-btn:hover {
+      color: var(--muyu-text-primary);
+    }
+    .dsh-muyu-tab-btn.active {
+      color: var(--muyu-accent);
+      border-bottom-color: var(--muyu-accent);
+      font-weight: 600;
+    }
+
+    .dsh-muyu-modal-body {
+      padding: 12px 16px;
+      overflow-y: auto;
+      font-size: 12px;
+    }
+
     .dsh-muyu-list-item {
-      padding: 10px 12px;
-      background: rgba(45, 34, 25, 0.5);
-      border: 1px solid rgba(212, 163, 89, 0.2);
-      border-radius: 8px;
-      margin-bottom: 8px;
       display: flex;
       justify-content: space-between;
       align-items: center;
+      padding: 9px 11px;
+      border-radius: 8px;
+      background: rgba(255, 255, 255, 0.03);
+      border: 1px solid rgba(212, 163, 89, 0.18);
+      margin-bottom: 8px;
       cursor: pointer;
-      transition: all 0.15s;
+      transition: background 0.15s, border-color 0.15s;
     }
-    .dsh-muyu-list-item:hover {
-      background: rgba(212, 163, 89, 0.2);
-      border-color: #ffd88a;
-    }
-    .dsh-muyu-list-item.active {
-      border-color: #ffd700;
-      background: rgba(212, 163, 89, 0.3);
-    }
-
-    @keyframes muyuRiseUp {
-      0% { opacity: 1; transform: translate(-50%, 0) scale(0.8); }
-      50% { opacity: 1; transform: translate(-50%, -32px) scale(1.2); }
-      100% { opacity: 0; transform: translate(-50%, -64px) scale(1.35); }
-    }
-    @keyframes muyuSpeechFloat {
-      0% { transform: translateY(0); }
-      100% { transform: translateY(-4px); }
+    .dsh-muyu-list-item:hover, .dsh-muyu-list-item.active {
+      background: rgba(212, 163, 89, 0.16);
+      border-color: rgba(255, 215, 0, 0.55);
     }
   `
   container.appendChild(style)
 
-  // 1. Header Anchor Container (Holds Speech Bubble and Drag Handle, never pushing stage down)
+  // 1. Header Anchor (Drag Handle + Collapse Pill + Sutra Speech Bubble — visible in both modes)
   const headerAnchor = document.createElement('div')
   headerAnchor.className = 'dsh-muyu-header-anchor'
 
-  const speechBubble = document.createElement('div')
-  speechBubble.className = 'dsh-muyu-speech'
-  speechBubble.textContent = '观自在菩萨，行深般若波罗蜜多时，照见五蕴皆空，度一切苦厄。'
-  headerAnchor.appendChild(speechBubble)
+  const topBar = document.createElement('div')
+  topBar.className = 'dsh-muyu-top-bar'
 
   const dragHandle = document.createElement('div')
   dragHandle.className = 'dsh-muyu-drag-handle'
-  dragHandle.innerHTML = '⋮⋮ 拖拽'
-  headerAnchor.appendChild(dragHandle)
+  dragHandle.setAttribute('role', 'button')
+  dragHandle.setAttribute('tabindex', '0')
+  dragHandle.setAttribute('aria-label', '按住拖动木鱼挂件位置')
+  dragHandle.textContent = '✥ 禅修木鱼'
+  topBar.appendChild(dragHandle)
+
+  const toggleBtn = document.createElement('button')
+  toggleBtn.type = 'button'
+  toggleBtn.className = 'dsh-muyu-collapse-pill'
+  toggleBtn.setAttribute('aria-label', '收起或展开木鱼控制面板')
+  toggleBtn.title = '收起为迷你木鱼（保留经文与拖动）'
+  toggleBtn.textContent = '收起'
+  topBar.appendChild(toggleBtn)
+
+  headerAnchor.appendChild(topBar)
+
+  const speechBubble = document.createElement('div')
+  speechBubble.className = 'dsh-muyu-bubble'
+  speechBubble.textContent = '观自在菩萨，行深般若波罗蜜多时，照见五蕴皆空，度一切苦厄。'
+  headerAnchor.appendChild(speechBubble)
 
   container.appendChild(headerAnchor)
 
-  // 2. Stage Container with 3D Fish and inclined 3D Mallet
+  // 2. 3D Wooden Fish Stage
   const stage = document.createElement('div')
   stage.className = 'dsh-muyu-stage'
-  stage.title = '挥动木槌，点击叩击木鱼'
+  stage.setAttribute('role', 'button')
+  stage.setAttribute('tabindex', '0')
+  stage.setAttribute('aria-label', '敲击木鱼积攒功德')
 
   const fishImg = document.createElement('img')
   fishImg.className = 'dsh-muyu-fish-img'
   fishImg.src = MUYU_FISH_BASE64
-  fishImg.alt = '3D 禅意木鱼'
+  fishImg.alt = '木鱼'
   stage.appendChild(fishImg)
 
   const malletImg = document.createElement('img')
   malletImg.className = 'dsh-muyu-mallet-img'
   malletImg.src = MUYU_MALLET_BASE64
-  malletImg.alt = '3D 敲击木槌'
+  malletImg.alt = '木槌'
   stage.appendChild(malletImg)
 
   const meritBadge = document.createElement('div')
@@ -369,45 +528,57 @@ export function createMuyuFloatingPet(options: WidgetOptions) {
 
   container.appendChild(stage)
 
-  // 3. Mini Toolbar
+  // 3. Consolidated Dock Card (4 clean buttons in 1 row + Token status footer)
+  const dockCard = document.createElement('div')
+  dockCard.className = 'dsh-muyu-dock-card'
+
   const toolbar = document.createElement('div')
   toolbar.className = 'dsh-muyu-toolbar'
 
   const autoBtn = document.createElement('button')
+  autoBtn.type = 'button'
   autoBtn.className = 'dsh-muyu-btn'
-  autoBtn.textContent = '自动修持'
+  autoBtn.setAttribute('aria-label', '切换自动修持敲击')
+  autoBtn.textContent = '▶ 自动'
   toolbar.appendChild(autoBtn)
 
   const voiceBtn = document.createElement('button')
-  voiceBtn.className = 'dsh-muyu-btn'
-  voiceBtn.textContent = '诵经: 开'
+  voiceBtn.type = 'button'
+  voiceBtn.className = `dsh-muyu-btn ${voiceEnabled ? 'is-active' : ''}`
+  voiceBtn.setAttribute('aria-label', '切换诵经语音开关')
+  voiceBtn.textContent = voiceEnabled ? '🔊 诵经' : '🔇 静音'
   toolbar.appendChild(voiceBtn)
 
-  const sutraBtn = document.createElement('button')
-  sutraBtn.className = 'dsh-muyu-btn'
-  sutraBtn.textContent = '选经'
-  toolbar.appendChild(sutraBtn)
-
-  const voiceSelectBtn = document.createElement('button')
-  voiceSelectBtn.className = 'dsh-muyu-btn'
-  voiceSelectBtn.textContent = '发音人'
-  toolbar.appendChild(voiceSelectBtn)
+  const settingsBtn = document.createElement('button')
+  settingsBtn.type = 'button'
+  settingsBtn.className = 'dsh-muyu-btn'
+  settingsBtn.setAttribute('aria-label', '打开选经、音色与发音人设置')
+  settingsBtn.textContent = '⚙ 禅修设置'
+  toolbar.appendChild(settingsBtn)
 
   const meritBtn = document.createElement('button')
+  meritBtn.type = 'button'
   meritBtn.className = 'dsh-muyu-btn'
-  meritBtn.textContent = '功德簿'
+  meritBtn.setAttribute('aria-label', '查看本机挂件功德簿')
+  meritBtn.textContent = '📿 功德簿'
   toolbar.appendChild(meritBtn)
 
-  const toggleBtn = document.createElement('button')
-  toggleBtn.className = 'dsh-muyu-btn'
-  toggleBtn.textContent = '收起'
-  toolbar.appendChild(toggleBtn)
+  dockCard.appendChild(toolbar)
 
-  container.appendChild(toolbar)
+  // Token Usage Status Bar integrated inside the dock card
+  const tokenBar = document.createElement('div')
+  tokenBar.className = 'dsh-muyu-token-bar'
+  tokenBar.title = '点击查看功德与 Token 详情'
+  tokenBar.textContent = '⚡ 挂件度化: 0 Tokens · 本机功德: 0'
+  dockCard.appendChild(tokenBar)
 
-  // 4. Modal Sheets
+  container.appendChild(dockCard)
+
+  // 4. Modal Sheet (Scoped inside container)
   const modalBackdrop = document.createElement('div')
   modalBackdrop.className = 'dsh-muyu-modal-backdrop'
+  modalBackdrop.setAttribute('role', 'dialog')
+  modalBackdrop.setAttribute('aria-modal', 'true')
 
   const modalCard = document.createElement('div')
   modalCard.className = 'dsh-muyu-modal-card'
@@ -416,19 +587,26 @@ export function createMuyuFloatingPet(options: WidgetOptions) {
   modalHeader.className = 'dsh-muyu-modal-header'
   const modalTitle = document.createElement('span')
   modalTitle.textContent = '弹窗'
-  const modalClose = document.createElement('span')
+  const modalClose = document.createElement('button')
+  modalClose.type = 'button'
   modalClose.className = 'dsh-muyu-modal-close'
-  modalClose.innerHTML = '&times;'
+  modalClose.setAttribute('aria-label', '关闭弹窗')
+  modalClose.textContent = '×'
   modalHeader.appendChild(modalTitle)
   modalHeader.appendChild(modalClose)
+
+  const modalTabs = document.createElement('div')
+  modalTabs.className = 'dsh-muyu-tabs'
+  modalTabs.style.display = 'none'
 
   const modalBody = document.createElement('div')
   modalBody.className = 'dsh-muyu-modal-body'
 
   modalCard.appendChild(modalHeader)
+  modalCard.appendChild(modalTabs)
   modalCard.appendChild(modalBody)
   modalBackdrop.appendChild(modalCard)
-  document.body.appendChild(modalBackdrop)
+  container.appendChild(modalBackdrop)
 
   const closeModal = () => {
     modalBackdrop.style.display = 'none'
@@ -438,7 +616,7 @@ export function createMuyuFloatingPet(options: WidgetOptions) {
     if (e.target === modalBackdrop) closeModal()
   })
 
-  // --- Mallet Cursor Tracking & Realistic Tilted Knock Animation ---
+  // Mallet Cursor Tracking & Knock Animation
   stage.addEventListener('mouseenter', () => {
     malletImg.style.display = 'block'
   })
@@ -454,27 +632,34 @@ export function createMuyuFloatingPet(options: WidgetOptions) {
   })
 
   function animateKnock() {
-    // Hammer head swings down from up-left (+38deg) downwards to strike (-14deg)
     malletImg.style.transform = 'translate(-88%, -50%) rotate(-14deg) scale(0.93)'
     fishImg.style.transform = 'scale(0.92)'
 
-    setTimeout(() => {
-      // Rebound back up to raised ready position (+38deg)
+    const t = setTimeout(() => {
+      sparkTimers.delete(t)
       malletImg.style.transform = 'translate(-88%, -50%) rotate(38deg) scale(1)'
       fishImg.style.transform = 'scale(1)'
     }, 110)
+    sparkTimers.add(t)
   }
 
-  // Knock Event
-  stage.addEventListener('click', () => {
+  const triggerUserKnock = () => {
     animateKnock()
     triggerKnockEffect()
     if (options.onKnock) {
       options.onKnock()
     }
+  }
+
+  stage.addEventListener('click', triggerUserKnock)
+  stage.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter' || e.key === ' ') {
+      e.preventDefault()
+      triggerUserKnock()
+    }
   })
 
-  // Dragging Handled by Dedicated Handle Only
+  // Dragging (works in both expanded and collapsed modes!)
   let isDragging = false
   let dragStartX = 0
   let dragStartY = 0
@@ -488,31 +673,35 @@ export function createMuyuFloatingPet(options: WidgetOptions) {
     const rect = container.getBoundingClientRect()
     initialLeft = rect.left
     initialTop = rect.top
-
     container.style.right = 'auto'
     container.style.bottom = 'auto'
     container.style.left = `${initialLeft}px`
     container.style.top = `${initialTop}px`
-    dragHandle.setPointerCapture(e.pointerId)
   })
 
-  window.addEventListener('pointermove', (e) => {
+  const onWindowPointerMove = (e: PointerEvent) => {
     if (!isDragging) return
     const dx = e.clientX - dragStartX
     const dy = e.clientY - dragStartY
     container.style.left = `${initialLeft + dx}px`
     container.style.top = `${initialTop + dy}px`
-  })
+  }
 
-  window.addEventListener('pointerup', (e) => {
-    if (!isDragging) return
+  const onWindowPointerUp = () => {
     isDragging = false
-    try {
-      dragHandle.releasePointerCapture(e.pointerId)
-    } catch {}
-  })
+  }
 
-  // Auto Knock Toggle
+  const onWindowKeyDown = (e: KeyboardEvent) => {
+    if (e.key === 'Escape' && modalBackdrop.style.display === 'flex') {
+      closeModal()
+    }
+  }
+
+  window.addEventListener('pointermove', onWindowPointerMove)
+  window.addEventListener('pointerup', onWindowPointerUp)
+  window.addEventListener('keydown', onWindowKeyDown)
+
+  // Auto Knock Button
   autoBtn.addEventListener('click', (e) => {
     e.stopPropagation()
     if (options.onToggleAuto) {
@@ -524,102 +713,193 @@ export function createMuyuFloatingPet(options: WidgetOptions) {
   voiceBtn.addEventListener('click', (e) => {
     e.stopPropagation()
     voiceEnabled = !voiceEnabled
-    voiceBtn.textContent = voiceEnabled ? '诵经: 开' : '诵经: 静音'
-    voiceBtn.style.color = voiceEnabled ? '#e6c88b' : '#999'
+    voiceBtn.textContent = voiceEnabled ? '🔊 诵经' : '🔇 静音'
+    voiceBtn.className = `dsh-muyu-btn ${voiceEnabled ? 'is-active' : ''}`
     if (options.onToggleVoice) {
       options.onToggleVoice(voiceEnabled)
     }
   })
 
-  // Sutra Book Selector Sheet
-  sutraBtn.addEventListener('click', (e) => {
-    e.stopPropagation()
-    modalTitle.textContent = '📜 传世经典宝库'
-    modalBody.innerHTML = ''
+  // Unified Zen Settings Modal (Tabs: 📜 选经 | 🔔 音色 | 🎙️ 发音人)
+  const renderSettingsTabContent = () => {
+    modalBody.replaceChildren()
 
-    options.sutraList.forEach((book) => {
-      const item = document.createElement('div')
-      const isCurrent = book.id === options.currentBookId
-      item.className = `dsh-muyu-list-item ${isCurrent ? 'active' : ''}`
-      item.innerHTML = `
-        <div>
-          <div style="font-weight: 600; color: #ffd88a;">《${book.title}》 ${isCurrent ? '👉 (修持中)' : ''}</div>
-          <div style="font-size: 11px; color: #bba688; margin-top: 3px;">${book.summary}</div>
-        </div>
-        <div style="font-size: 11px; color: #e6c88b;">${book.sentences.length} 句</div>
-      `
-      item.addEventListener('click', () => {
-        options.currentBookId = book.id
-        if (options.onSelectSutra) {
-          options.onSelectSutra(book.id)
-        }
-        closeModal()
-      })
-      modalBody.appendChild(item)
-    })
-    modalBackdrop.style.display = 'flex'
-  })
-
-  // Voice Selector Sheet (发音人音色设置)
-  voiceSelectBtn.addEventListener('click', (e) => {
-    e.stopPropagation()
-    modalTitle.textContent = '🗣️ 选择诵经发音人 (默认粤语女声)'
-    modalBody.innerHTML = ''
-
-    const voices = options.getVoiceList ? options.getVoiceList() : []
-    const currentId = options.getCurrentVoiceId ? options.getCurrentVoiceId() : ''
-
-    if (voices.length === 0) {
-      const emptyTip = document.createElement('div')
-      emptyTip.style.cssText = 'color: #ffd88a; text-align: center; padding: 24px; line-height: 1.6;'
-      emptyTip.innerHTML = `
-        <div>正在检索系统中文/粤语发音人...</div>
-        <div style="font-size: 11px; color: #aaa; margin-top: 6px;">若未检测到发音人，请确保系统语音库已启用中文或粤语女声（如 Sinji / 善怡）。</div>
-      `
-      modalBody.appendChild(emptyTip)
-    } else {
-      const tipBox = document.createElement('div')
-      tipBox.style.cssText = 'font-size: 11px; color: #ffd88a; margin-bottom: 12px; padding: 6px 10px; background: rgba(212,163,89,0.15); border-radius: 6px; border: 1px solid rgba(212,163,89,0.3);'
-      tipBox.textContent = '✨ 默认推荐：粤语女声（幽雅庄严、梵音清净）。点击即可切换。'
-      modalBody.appendChild(tipBox)
-
-      voices.forEach((v) => {
+    if (currentSettingsTab === 'sutra') {
+      options.sutraList.forEach((book) => {
         const item = document.createElement('div')
-        const isCurrent = v.id === currentId
+        const isCurrent = book.id === options.currentBookId
         item.className = `dsh-muyu-list-item ${isCurrent ? 'active' : ''}`
-        item.innerHTML = `
-          <div>
-            <div style="font-weight: 600; color: #ffd88a;">
-              ${v.name} ${v.isCantonese ? '🌸 [粤语推荐]' : ''} ${isCurrent ? '👉 (使用中)' : ''}
-            </div>
-            <div style="font-size: 11px; color: #bba688; margin-top: 2px;">
-              ${v.description} · ${v.lang}
-            </div>
-          </div>
-          <div style="font-size: 12px; color: ${isCurrent ? '#ffd700' : '#e6c88b'}; font-weight: ${isCurrent ? 'bold' : 'normal'};">
-            ${isCurrent ? '已选' : '选择'}
-          </div>
-        `
+
+        const leftCol = document.createElement('div')
+        const titleDiv = document.createElement('div')
+        titleDiv.style.cssText = 'font-weight: 600; color: #ffd88a;'
+        titleDiv.textContent = `《${book.title}》 ${isCurrent ? '👉 (修持中)' : ''}`
+
+        const summaryDiv = document.createElement('div')
+        summaryDiv.style.cssText = 'font-size: 11px; color: #bba688; margin-top: 3px;'
+        summaryDiv.textContent = book.summary
+
+        leftCol.appendChild(titleDiv)
+        leftCol.appendChild(summaryDiv)
+
+        const rightCol = document.createElement('div')
+        rightCol.style.cssText = 'font-size: 11px; color: #e6c88b; white-space: nowrap; margin-left: 8px;'
+        rightCol.textContent = `${book.sentences.length} 句`
+
+        item.appendChild(leftCol)
+        item.appendChild(rightCol)
+
         item.addEventListener('click', () => {
-          if (options.onSelectVoice) {
-            options.onSelectVoice(v.id)
+          options.currentBookId = book.id
+          if (options.onSelectSutra) {
+            options.onSelectSutra(book.id)
           }
-          closeModal()
+          renderSettingsTabContent()
         })
         modalBody.appendChild(item)
       })
+      return
     }
 
+    if (currentSettingsTab === 'sound') {
+      const presets = options.getSoundPresets ? options.getSoundPresets() : []
+      const currentSound = options.getCurrentSoundId ? options.getCurrentSoundId() : 'sandalwood'
+
+      presets.forEach((preset) => {
+        const item = document.createElement('div')
+        const isCurrent = preset.id === currentSound
+        item.className = `dsh-muyu-list-item ${isCurrent ? 'active' : ''}`
+
+        const leftCol = document.createElement('div')
+        const titleDiv = document.createElement('div')
+        titleDiv.style.cssText = 'font-weight: 600; color: #ffd88a;'
+        titleDiv.textContent = `${preset.name} ${isCurrent ? '👉 (使用中)' : ''}`
+
+        const descDiv = document.createElement('div')
+        descDiv.style.cssText = 'font-size: 11px; color: #bba688; margin-top: 2px;'
+        descDiv.textContent = preset.description
+
+        leftCol.appendChild(titleDiv)
+        leftCol.appendChild(descDiv)
+
+        const rightCol = document.createElement('div')
+        rightCol.style.cssText = `font-size: 12px; color: ${isCurrent ? '#ffd700' : '#e6c88b'}; font-weight: ${isCurrent ? 'bold' : 'normal'}; white-space: nowrap; margin-left: 8px;`
+        rightCol.textContent = isCurrent ? '已选' : '试听选择'
+
+        item.appendChild(leftCol)
+        item.appendChild(rightCol)
+
+        item.addEventListener('click', () => {
+          if (options.onSelectSound) {
+            options.onSelectSound(preset.id)
+          }
+          renderSettingsTabContent()
+        })
+        modalBody.appendChild(item)
+      })
+      return
+    }
+
+    if (currentSettingsTab === 'voice') {
+      const voices = options.getVoiceList ? options.getVoiceList() : []
+      const currentId = options.getCurrentVoiceId ? options.getCurrentVoiceId() : ''
+
+      if (voices.length === 0) {
+        const emptyTip = document.createElement('div')
+        emptyTip.style.cssText = 'color: #888; text-align: center; padding: 16px 0;'
+        emptyTip.textContent = '当前浏览器正在加载系统语音包，请稍后再试'
+        modalBody.appendChild(emptyTip)
+      } else {
+        const tipBox = document.createElement('div')
+        tipBox.style.cssText = 'font-size: 11px; color: #ffd88a; margin-bottom: 12px; padding: 6px 10px; background: rgba(212,163,89,0.15); border-radius: 6px; border: 1px solid rgba(212,163,89,0.3);'
+        tipBox.textContent = '✨ 默认推荐：粤语女声（幽雅庄严、梵音清净）。点击即可切换发音人。'
+        modalBody.appendChild(tipBox)
+
+        voices.forEach((v) => {
+          const item = document.createElement('div')
+          const isCurrent = v.id === currentId
+          item.className = `dsh-muyu-list-item ${isCurrent ? 'active' : ''}`
+
+          const leftCol = document.createElement('div')
+          const nameDiv = document.createElement('div')
+          nameDiv.style.cssText = 'font-weight: 600; color: #ffd88a;'
+          nameDiv.textContent = `${v.name} ${v.isCantonese ? '🌸 [粤语推荐]' : ''} ${isCurrent ? '👉 (使用中)' : ''}`
+
+          const descDiv = document.createElement('div')
+          descDiv.style.cssText = 'font-size: 11px; color: #bba688; margin-top: 2px;'
+          descDiv.textContent = `${v.description} · ${v.lang}`
+
+          leftCol.appendChild(nameDiv)
+          leftCol.appendChild(descDiv)
+
+          const rightCol = document.createElement('div')
+          rightCol.style.cssText = `font-size: 12px; color: ${isCurrent ? '#ffd700' : '#e6c88b'}; font-weight: ${isCurrent ? 'bold' : 'normal'}; white-space: nowrap; margin-left: 8px;`
+          rightCol.textContent = isCurrent ? '已选' : '选择'
+
+          item.appendChild(leftCol)
+          item.appendChild(rightCol)
+
+          item.addEventListener('click', () => {
+            if (options.onSelectVoice) {
+              options.onSelectVoice(v.id)
+            }
+            renderSettingsTabContent()
+          })
+          modalBody.appendChild(item)
+        })
+      }
+    }
+  }
+
+  const openSettingsModal = (initialTab: 'sutra' | 'sound' | 'voice' = 'sutra') => {
+    currentSettingsTab = initialTab
+    modalTitle.textContent = '⚙ 禅修设置（经典 · 音色 · 发音人）'
+    modalTabs.style.display = 'flex'
+    modalTabs.replaceChildren()
+
+    const tabs: Array<{ id: 'sutra' | 'sound' | 'voice'; label: string }> = [
+      { id: 'sutra', label: '📜 传世经典' },
+      { id: 'sound', label: '🔔 音色切换' },
+      { id: 'voice', label: '🎙️ 诵经语音' }
+    ]
+
+    tabs.forEach((tab) => {
+      const btn = document.createElement('button')
+      btn.type = 'button'
+      btn.className = `dsh-muyu-tab-btn ${currentSettingsTab === tab.id ? 'active' : ''}`
+      btn.textContent = tab.label
+      btn.addEventListener('click', () => {
+        currentSettingsTab = tab.id
+        Array.from(modalTabs.children).forEach((child, idx) => {
+          child.className = `dsh-muyu-tab-btn ${tabs[idx].id === currentSettingsTab ? 'active' : ''}`
+        })
+        renderSettingsTabContent()
+      })
+      modalTabs.appendChild(btn)
+    })
+
+    renderSettingsTabContent()
     modalBackdrop.style.display = 'flex'
+  }
+
+  settingsBtn.addEventListener('click', (e) => {
+    e.stopPropagation()
+    openSettingsModal(currentSettingsTab)
   })
 
-  // Merit Record Sheet (功德簿)
-  meritBtn.addEventListener('click', (e) => {
+  // Merit Record Sheet (本机挂件功德簿)
+  const openMeritModal = (e: Event) => {
     e.stopPropagation()
-    modalTitle.textContent = '📿 历劫功德簿'
-    modalBody.innerHTML = ''
+    modalTitle.textContent = '📿 本机挂件功德簿'
+    modalTabs.style.display = 'none'
+    modalBody.replaceChildren()
 
     const stats = options.getMeritRecords()
+
+    const noteBanner = document.createElement('div')
+    noteBanner.style.cssText = 'font-size: 10px; color: #c4a46e; margin-bottom: 10px; line-height: 1.4;'
+    noteBanner.textContent = '注：此处记录挂件本机交互功德（保存在浏览器 localStorage）；服务端工具账本请通过 muyu_get_merit 工具查询。'
+    modalBody.appendChild(noteBanner)
 
     const summaryBox = document.createElement('div')
     summaryBox.style.cssText = `
@@ -632,80 +912,92 @@ export function createMuyuFloatingPet(options: WidgetOptions) {
       margin-bottom: 14px;
       text-align: center;
     `
-    summaryBox.innerHTML = `
-      <div>
-        <div style="font-size: 11px; color: #dfba78;">今日修行功德</div>
-        <div style="font-size: 22px; font-weight: bold; color: #ffd700; margin-top: 2px;">+${stats.todayMerit}</div>
-      </div>
-      <div style="width: 1px; background: rgba(212,163,89,0.3);"></div>
-      <div>
-        <div style="font-size: 11px; color: #dfba78;">历劫累积总功德</div>
-        <div style="font-size: 22px; font-weight: bold; color: #ffd700; margin-top: 2px;">${stats.totalMerit}</div>
-      </div>
-    `
+
+    const makeCol = (label: string, meritVal: string, tokenVal: number) => {
+      const col = document.createElement('div')
+      const l = document.createElement('div')
+      l.style.cssText = 'font-size: 11px; color: #dfba78;'
+      l.textContent = label
+
+      const m = document.createElement('div')
+      m.style.cssText = 'font-size: 20px; font-weight: bold; color: #ffd700; margin-top: 2px;'
+      m.textContent = meritVal
+
+      const t = document.createElement('div')
+      t.style.cssText = 'font-size: 9px; color: #c4a46e; margin-top: 2px;'
+      t.textContent = `⚡ ${tokenVal.toLocaleString()} Tokens`
+
+      col.appendChild(l)
+      col.appendChild(m)
+      col.appendChild(t)
+      return col
+    }
+
+    const divider = document.createElement('div')
+    divider.style.cssText = 'width: 1px; background: rgba(212,163,89,0.3);'
+
+    summaryBox.appendChild(makeCol('今日挂件功德', `+${stats.todayMerit}`, stats.todayTokens ?? 0))
+    summaryBox.appendChild(divider)
+    summaryBox.appendChild(makeCol('本机累计总功德', `${stats.totalMerit}`, stats.totalTokens ?? 0))
     modalBody.appendChild(summaryBox)
 
     const listTitle = document.createElement('div')
     listTitle.style.cssText = 'font-weight: 600; color: #dfba78; margin-bottom: 8px;'
-    listTitle.textContent = '📅 按日功德明细'
+    listTitle.textContent = '📅 按日修持明细'
     modalBody.appendChild(listTitle)
 
     if (stats.records && stats.records.length > 0) {
       stats.records.forEach((rec) => {
         const item = document.createElement('div')
         item.className = 'dsh-muyu-list-item'
-        item.innerHTML = `
-          <div>
-            <span style="font-weight: 600;">${rec.displayDate}</span>
-            <span style="font-size: 10px; color: #999; margin-left: 6px;">(${rec.dateKey})</span>
-          </div>
-          <div style="font-size: 14px; font-weight: bold; color: #ffd700;">+${rec.count} 功德</div>
-        `
+
+        const left = document.createElement('div')
+        const dateSpan = document.createElement('span')
+        dateSpan.style.fontWeight = '600'
+        dateSpan.textContent = rec.displayDate
+
+        const keySpan = document.createElement('span')
+        keySpan.style.cssText = 'font-size: 10px; color: #999; margin-left: 6px;'
+        keySpan.textContent = `(${rec.dateKey})`
+
+        left.appendChild(dateSpan)
+        left.appendChild(keySpan)
+
+        if (rec.tokens && rec.tokens > 0) {
+          const tokDiv = document.createElement('div')
+          tokDiv.style.cssText = 'font-size: 10px; color: #c4a46e; margin-top: 2px;'
+          tokDiv.textContent = `⚡ 度化 ${rec.tokens.toLocaleString()} Tokens`
+          left.appendChild(tokDiv)
+        }
+
+        const right = document.createElement('div')
+        right.style.cssText = 'font-size: 13px; font-weight: bold; color: #ffd700;'
+        right.textContent = `+${rec.count} 功德`
+
+        item.appendChild(left)
+        item.appendChild(right)
         modalBody.appendChild(item)
       })
     } else {
       const emptyTip = document.createElement('div')
-      emptyTip.style.cssText = 'color: #999; text-align: center; padding: 20px;'
-      emptyTip.textContent = '暂无历史功德记录，快去叩木鱼修持吧！'
+      emptyTip.style.cssText = 'color: #888; text-align: center; padding: 14px 0;'
+      emptyTip.textContent = '今日尚无敲击记录，轻敲木鱼开启修行吧'
       modalBody.appendChild(emptyTip)
     }
 
     modalBackdrop.style.display = 'flex'
-  })
+  }
 
-  // Expand / Collapse Toggle
+  meritBtn.addEventListener('click', openMeritModal)
+  tokenBar.addEventListener('click', openMeritModal)
+
+  // Expand / Collapse Toggle (Collapsed mode keeps mini sutra bubble + drag handle + mini fish)
   toggleBtn.addEventListener('click', (e) => {
     e.stopPropagation()
     isCollapsed = !isCollapsed
-    if (isCollapsed) {
-      headerAnchor.style.display = 'none'
-      autoBtn.style.display = 'none'
-      voiceBtn.style.display = 'none'
-      sutraBtn.style.display = 'none'
-      voiceSelectBtn.style.display = 'none'
-      meritBtn.style.display = 'none'
-      stage.style.width = '52px'
-      stage.style.height = '52px'
-      stage.style.borderRadius = '50%'
-      fishImg.style.width = '42px'
-      fishImg.style.height = '36px'
-      meritBadge.style.display = 'none'
-      toggleBtn.textContent = '展开'
-    } else {
-      headerAnchor.style.display = 'flex'
-      autoBtn.style.display = 'inline-block'
-      voiceBtn.style.display = 'inline-block'
-      sutraBtn.style.display = 'inline-block'
-      voiceSelectBtn.style.display = 'inline-block'
-      meritBtn.style.display = 'inline-block'
-      stage.style.width = '134px'
-      stage.style.height = '98px'
-      stage.style.borderRadius = '26px'
-      fishImg.style.width = '108px'
-      fishImg.style.height = '70px'
-      meritBadge.style.display = 'block'
-      toggleBtn.textContent = '收起'
-    }
+    container.classList.toggle('is-collapsed', isCollapsed)
+    toggleBtn.textContent = isCollapsed ? '展开' : '收起'
+    toggleBtn.title = isCollapsed ? '展开禅修控制栏' : '收起为迷你木鱼（保留经文与拖动）'
   })
 
   function triggerKnockEffect(text: string = '功德 +1') {
@@ -715,26 +1007,49 @@ export function createMuyuFloatingPet(options: WidgetOptions) {
     spark.textContent = text
     spark.style.left = `${rect.left + rect.width / 2}px`
     spark.style.top = `${rect.top}px`
-    document.body.appendChild(spark)
-    setTimeout(() => {
+    container.appendChild(spark)
+    const timer = setTimeout(() => {
+      sparkTimers.delete(timer)
       spark.remove()
     }, 850)
+    sparkTimers.add(timer)
   }
+
+  const unmount = () => {
+    window.removeEventListener('pointermove', onWindowPointerMove)
+    window.removeEventListener('pointerup', onWindowPointerUp)
+    window.removeEventListener('keydown', onWindowKeyDown)
+    for (const timer of sparkTimers) {
+      clearTimeout(timer)
+    }
+    sparkTimers.clear()
+    container.remove()
+    if (activeInstanceUnmount === unmount) {
+      activeInstanceUnmount = null
+    }
+  }
+
+  activeInstanceUnmount = unmount
 
   return {
     mount(target: HTMLElement = document.body) {
       target.appendChild(container)
     },
-    unmount() {
-      container.remove()
-      modalBackdrop.remove()
-    },
-    update(merit: number, sentence: string, isAutoRunning?: boolean) {
+    unmount,
+    update(
+      merit: number,
+      sentence: string,
+      isAutoRunning?: boolean,
+      tokenStats?: { todayTokens: number; totalTokens: number }
+    ) {
       meritBadge.textContent = `功德 ${merit}`
       speechBubble.textContent = sentence
       if (typeof isAutoRunning === 'boolean') {
-        autoBtn.textContent = isAutoRunning ? '停止自动' : '自动修持'
-        autoBtn.style.color = isAutoRunning ? '#ffd700' : '#e6c88b'
+        autoBtn.textContent = isAutoRunning ? '⏹ 停止' : '▶ 自动'
+        autoBtn.className = `dsh-muyu-btn ${isAutoRunning ? 'is-active' : ''}`
+      }
+      if (tokenStats) {
+        tokenBar.textContent = `⚡ 挂件度化: ${tokenStats.todayTokens.toLocaleString()} Tokens · 本机功德: ${merit}`
       }
     },
     triggerKnockEffect,

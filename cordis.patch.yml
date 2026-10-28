@@ -5,7 +5,10 @@
         defaultSutra: 'heart_sutra'
         defaultSound: 'sandalwood'
         autoKnockIntervalMs: 1200
+        autoKnockMaxDurationMs: 1800000
         voiceEnabled: true
         voiceRate: 0.8
         voicePitch: 0.95
         volume: 1.0
+        tokenKnockEnabled: true
+        tokensPerMerit: 10000

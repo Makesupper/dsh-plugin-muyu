@@ -1,16 +1,13 @@
 /**
- * Muyu Floating Widget UI Component (QQ-Pet style floating companion)
+ * Muyu Floating Widget UI Component
  * Features:
- * - Real 3D Mallet & 3D Wooden Fish rendered from SceneKit assets!
- * - Realistic mallet angle holding (naturally tilted ~-32deg, hits down to +18deg on click).
- * - Fixed Stage Anchor: The speech bubble expands UPWARDS or is housed in a fixed-height layout,
- *   so the Muyu body NEVER jumps or shifts when sentences wrap into multiple lines!
- * - Smooth drag handle (dedicated drag pill, clicking fish won't drift or displace)
- * - Complete sentence recitation (continuous reading, not cut off by repeated taps)
- * - Built-in Merit Record Sheet (历劫功德簿)
- * - Built-in Sutra Library Selector (传世经典宝库)
- * - Expand / Collapse toggle without losing state
+ * - Clean, consolidated single-row capsule dock in expanded mode (Auto, Voice, Merit, Settings, Collapse)
+ * - Unified Zen Settings Sheet (禅修设置) with segmented tabs for Sutra, Sound Preset, and Voice
+ * - Mini Zen Mode when collapsed: draggable header pill + compact sutra bubble + mini wooden fish + expand button
+ * - Scoped DOM & full lifecycle cleanup on unmount()
  */
+import type { MuyuSoundType } from '../types.js';
+import type { SoundPresetOption } from './sound-player.js';
 export interface SutraItem {
     id: string;
     title: string;
@@ -21,24 +18,45 @@ export interface MeritHistoryItem {
     dateKey: string;
     displayDate: string;
     count: number;
+    tokens?: number;
+}
+export interface VoiceItem {
+    id: string;
+    name: string;
+    lang: string;
+    description: string;
+    isCantonese: boolean;
 }
 export interface WidgetOptions {
     onKnock?: () => void;
     onToggleAuto?: () => void;
     onToggleVoice?: (enabled: boolean) => void;
     onSelectSutra?: (bookId: string) => void;
+    onSelectVoice?: (voiceId: string) => void;
+    onSelectSound?: (soundId: MuyuSoundType) => void;
+    getVoiceList?: () => VoiceItem[];
+    getCurrentVoiceId?: () => string;
+    getSoundPresets?: () => SoundPresetOption[];
+    getCurrentSoundId?: () => MuyuSoundType;
     sutraList: SutraItem[];
     currentBookId: string;
+    initialVoiceEnabled?: boolean;
     getMeritRecords: () => {
         todayMerit: number;
         totalMerit: number;
+        todayTokens?: number;
+        totalTokens?: number;
+        pendingTokens?: number;
         records: MeritHistoryItem[];
     };
 }
 export declare function createMuyuFloatingPet(options: WidgetOptions): {
     mount(target?: HTMLElement): void;
-    unmount(): void;
-    update(merit: number, sentence: string, isAutoRunning?: boolean): void;
+    unmount: () => void;
+    update(merit: number, sentence: string, isAutoRunning?: boolean, tokenStats?: {
+        todayTokens: number;
+        totalTokens: number;
+    }): void;
     triggerKnockEffect: (text?: string) => void;
     animateKnock: () => void;
 };

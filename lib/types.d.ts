@@ -21,10 +21,14 @@ export interface DailyMeritRecord {
     dateKey: string;
     count: number;
     displayDate: string;
+    tokens?: number;
 }
 export interface MeritStats {
     todayMerit: number;
     totalMerit: number;
+    todayTokens: number;
+    totalTokens: number;
+    pendingTokens: number;
     todayKey: string;
     records: DailyMeritRecord[];
 }
@@ -32,17 +36,22 @@ export interface KnockResult {
     amount: number;
     todayMerit: number;
     totalMerit: number;
+    todayTokens: number;
+    totalTokens: number;
     currentSentence: SutraSentence;
     nextSentence: SutraSentence;
     cycleCompleted: boolean;
     completedCycles: number;
     soundType: MuyuSoundType;
     soundFile: string;
+    tokensConsumed?: number;
+    pendingTokens?: number;
     voicePrompt: {
         text: string;
         lang: string;
         rate: number;
         pitch: number;
+        volume: number;
     };
 }
 export interface AutoKnockStatus {
@@ -50,7 +59,19 @@ export interface AutoKnockStatus {
     targetCount: number;
     currentCount: number;
     intervalMs: number;
+    maxDurationMs: number;
     cycleTitle: string;
     startTime?: number;
+}
+export interface TokenConsumeResult {
+    tokensConsumed: number;
+    pendingTokens: number;
+    knocksTriggered: number;
+    meritGained: number;
+    todayMerit: number;
+    totalMerit: number;
+    todayTokens: number;
+    totalTokens: number;
+    knockResults: KnockResult[];
 }
 //# sourceMappingURL=types.d.ts.map

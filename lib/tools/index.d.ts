@@ -31,17 +31,22 @@ export declare function createMuyuTools(muyu: MuyuService): ({
         amount: number;
         todayMerit: number;
         totalMerit: number;
+        todayTokens: number;
+        totalTokens: number;
         currentSentence: import("../types.js").SutraSentence;
         nextSentence: import("../types.js").SutraSentence;
         cycleCompleted: boolean;
         completedCycles: number;
         soundType: MuyuSoundType;
         soundFile: string;
+        tokensConsumed?: number;
+        pendingTokens?: number;
         voicePrompt: {
             text: string;
             lang: string;
             rate: number;
             pitch: number;
+            volume: number;
         };
         soundDisplayName: string;
     }>;
@@ -81,9 +86,20 @@ export declare function createMuyuTools(muyu: MuyuService): ({
         targetCount: number;
         currentCount: number;
         intervalMs: number;
+        maxDurationMs: number;
         cycleTitle: string;
         startTime?: number;
         action: string;
+    } | {
+        running: boolean;
+        targetCount: number;
+        currentCount: number;
+        intervalMs: number;
+        maxDurationMs: number;
+        cycleTitle: string;
+        startTime?: number;
+        action: string;
+        cycleFallbackNote: string | undefined;
     }>;
 } | {
     name: string;
@@ -127,13 +143,18 @@ export declare function createMuyuTools(muyu: MuyuService): ({
     };
     execute(args: any): Promise<{
         selected: boolean;
-        currentBook: import("../types.js").SutraBook;
+        currentBook: {
+            id: string;
+            title: string;
+            summary: string;
+            sentenceCount: number;
+        };
         currentSentence: import("../types.js").SutraSentence;
         availableBooks: {
             id: string;
             title: string;
             summary: string;
-            sentences: string[];
+            sentenceCount: number;
         }[];
     }>;
 } | {
@@ -162,6 +183,40 @@ export declare function createMuyuTools(muyu: MuyuService): ({
     execute(args: any): Promise<{
         currentSound: import("../types.js").SoundDefinition;
         soundFilePath: string;
+    }>;
+} | {
+    name: string;
+    description: string;
+    parameters: {
+        type: string;
+        properties: {
+            tokens: {
+                type: string;
+                description: string;
+            };
+        };
+        required: string[];
+    };
+    output: {
+        schema: {
+            type: string;
+        };
+        render: (_args: any, res: any) => {
+            type: string;
+            text: string;
+        }[];
+    };
+    execute(args: any): Promise<{
+        tokensConsumed: number;
+        pendingTokens: number;
+        knocksTriggered: number;
+        meritGained: number;
+        todayMerit: number;
+        totalMerit: number;
+        todayTokens: number;
+        totalTokens: number;
+        knockResults: import("../types.js").KnockResult[];
+        tokensPerMerit: number;
     }>;
 })[];
 //# sourceMappingURL=index.d.ts.map

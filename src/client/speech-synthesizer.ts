@@ -2,9 +2,10 @@
  * Cross-platform Sutra Speech Chanting Engine (Web Speech API)
  * Features:
  * - Natural cadence and spacing for Chinese Buddhist sutra recitation.
- * - Gentle pacing (rate: 0.72) and solemn pitch (0.90).
- * - Punctuation and phrase cadence insertion: adds micro-pauses between classical rhythm chunks
- *   so the recitation flows with a breathing pause rather than mechanical fast rush.
+ * - Configurable pacing (rate, pitch, volume) with safe clamping.
+ * - Uses the selected voice's actual language tag (`this.voice.lang`) so Cantonese (`zh-HK` / `yue`)
+ *   and Mandarin voices pronounce authentically.
+ * - Clean listener lifecycle (`addEventListener` / `removeEventListener` + timer cleanup on `dispose()`).
  */
 
 export interface VoiceOption {
@@ -15,20 +16,49 @@ export interface VoiceOption {
   isCantonese: boolean
 }
 
+export interface SpeechPreferences {
+  rate?: number
+  pitch?: number
+  volume?: number
+  voiceId?: string
+}
+
+function clamp(val: number | undefined, fallback: number, min: number, max: number): number {
+  if (typeof val !== 'number' || !Number.isFinite(val)) return fallback
+  return Math.min(max, Math.max(min, val))
+}
+
 export class SutraSpeechSynthesizer {
   private synth: SpeechSynthesis | null = null
   private voice: SpeechSynthesisVoice | null = null
   private selectedVoiceId: string = ''
+  private voicesChangedHandler: (() => void) | null = null
+  private fallbackTimer: ReturnType<typeof setTimeout> | null = null
+
   public enabled: boolean = true
+  public rate: number = 0.72
+  public pitch: number = 0.92
+  public volume: number = 1.0
+
   public onSentenceEnd?: () => void
   public onVoicesLoaded?: (voices: VoiceOption[], currentId: string) => void
 
-  constructor() {
+  constructor(prefs?: SpeechPreferences) {
+    if (prefs) {
+      this.rate = clamp(prefs.rate, 0.72, 0.1, 2.0)
+      this.pitch = clamp(prefs.pitch, 0.92, 0.1, 2.0)
+      this.volume = clamp(prefs.volume, 1.0, 0.0, 1.0)
+      if (prefs.voiceId) {
+        this.selectedVoiceId = prefs.voiceId
+      }
+    }
+
     if (typeof window !== 'undefined' && 'speechSynthesis' in window) {
       this.synth = window.speechSynthesis
       this.initVoice()
-      if (typeof window.speechSynthesis.onvoiceschanged !== 'undefined') {
-        window.speechSynthesis.onvoiceschanged = () => this.initVoice()
+      this.voicesChangedHandler = () => this.initVoice()
+      if (typeof this.synth.addEventListener === 'function') {
+        this.synth.addEventListener('voiceschanged', this.voicesChangedHandler)
       }
     }
   }
@@ -38,7 +68,6 @@ export class SutraSpeechSynthesizer {
     const voices = this.synth.getVoices()
     if (!voices || voices.length === 0) return
 
-    // If user has a selected voice id, try to restore
     if (this.selectedVoiceId) {
       const found = voices.find(v => `${v.name}__${v.lang}` === this.selectedVoiceId)
       if (found) {
@@ -48,14 +77,10 @@ export class SutraSpeechSynthesizer {
       }
     }
 
-    // Default Requirement: 默认粤语女声 (Cantonese female voice)
-    // 1. Prioritize Cantonese female voice (Sinji / zh-HK / yue / Hong Kong female)
+    // Prioritize Cantonese female voice -> any Cantonese -> Mandarin female -> any Chinese
     const cantoneseFemale = voices.find(v => this.checkIsCantonese(v) && this.checkIsFemale(v))
-    // 2. Any Cantonese voice
     const anyCantonese = voices.find(v => this.checkIsCantonese(v))
-    // 3. Fallback to Mandarin natural female
     const mandarinFemale = voices.find(v => (v.lang.includes('zh') || v.lang.includes('CN')) && this.checkIsFemale(v))
-    // 4. Fallback to any Chinese voice
     const anyChinese = voices.find(v => v.lang.includes('zh'))
 
     this.voice = cantoneseFemale || anyCantonese || mandarinFemale || anyChinese || voices[0] || null
@@ -165,17 +190,8 @@ export class SutraSpeechSynthesizer {
     return !!(this.synth && (this.synth.speaking || this.synth.pending))
   }
 
-  /**
-   * Format sutra sentence to rhythmic cadence.
-   * Classical sutra has a 4-character / 2-character natural chanting rhythm.
-   * Adding gentle commas or slight breathing spaces prevents Web Speech API from rushing words.
-   */
   private formatRhythmicText(text: string): string {
-    // If the text already has full punctuation, preserve it with slight pauses
-    // Replace commas/semicolons with clean pauses
-    let formatted = text.replace(/，/g, '， ').replace(/。/g, '。 ')
-    // For phrases like "揭谛揭谛，波罗揭谛", ensure natural rhythm
-    return formatted
+    return text.replace(/，/g, '， ').replace(/。/g, '。 ')
   }
 
   public chantSentence(text: string, onEnd?: () => void) {
@@ -184,25 +200,32 @@ export class SutraSpeechSynthesizer {
       return
     }
 
-    // Cancel previously queued voice cleanly
+    if (this.fallbackTimer) {
+      clearTimeout(this.fallbackTimer)
+      this.fallbackTimer = null
+    }
     this.synth.cancel()
 
     const rhythmicText = this.formatRhythmicText(text)
     const utterance = new SpeechSynthesisUtterance(rhythmicText)
     if (this.voice) {
       utterance.voice = this.voice
+      utterance.lang = this.voice.lang || 'zh-CN'
+    } else {
+      utterance.lang = 'zh-CN'
     }
-    utterance.lang = 'zh-CN'
-    // Calm Buddhist cadence: rate 0.70 gives space between characters and phrases
-    utterance.rate = 0.70
-    // Solemn monk chanting resonance
-    utterance.pitch = 0.90
-    utterance.volume = 1.0
+    utterance.rate = clamp(this.rate, 0.72, 0.1, 2.0)
+    utterance.pitch = clamp(this.pitch, 0.92, 0.1, 2.0)
+    utterance.volume = clamp(this.volume, 1.0, 0.0, 1.0)
 
     let finished = false
     const done = () => {
       if (finished) return
       finished = true
+      if (this.fallbackTimer) {
+        clearTimeout(this.fallbackTimer)
+        this.fallbackTimer = null
+      }
       if (onEnd) onEnd()
       if (this.onSentenceEnd) this.onSentenceEnd()
     }
@@ -210,9 +233,8 @@ export class SutraSpeechSynthesizer {
     utterance.onend = done
     utterance.onerror = done
 
-    // Chrome/Safari safety timeout in case speech synth hangs
     const expectedDurationMs = Math.max(2500, (rhythmicText.length / 2.5) * 1000 + 1500)
-    setTimeout(() => {
+    this.fallbackTimer = setTimeout(() => {
       if (!finished && !this.isSpeaking()) {
         done()
       }
@@ -222,8 +244,20 @@ export class SutraSpeechSynthesizer {
   }
 
   public stop() {
+    if (this.fallbackTimer) {
+      clearTimeout(this.fallbackTimer)
+      this.fallbackTimer = null
+    }
     if (this.synth) {
       this.synth.cancel()
     }
+  }
+
+  public dispose() {
+    this.stop()
+    if (this.synth && this.voicesChangedHandler && typeof this.synth.removeEventListener === 'function') {
+      this.synth.removeEventListener('voiceschanged', this.voicesChangedHandler)
+    }
+    this.voicesChangedHandler = null
   }
 }
