@@ -251,6 +251,20 @@ function buildExports(require?: any) {
               chantNextSentence()
             }
           }
+        },
+        getVoiceList: () => {
+          return speechSynth.getAvailableVoiceOptions()
+        },
+        getCurrentVoiceId: () => {
+          return speechSynth.getSelectedVoiceId()
+        },
+        onSelectVoice: (voiceId: string) => {
+          speechSynth.setVoice(voiceId)
+          // If speaking, restart current sentence with the new voice
+          if (speechSynth.isSpeaking()) {
+            speechSynth.stop()
+            chantNextSentence()
+          }
         }
       })
 

@@ -7,11 +7,21 @@
  *   so the recitation flows with a breathing pause rather than mechanical fast rush.
  */
 
+export interface VoiceOption {
+  id: string
+  name: string
+  lang: string
+  description: string
+  isCantonese: boolean
+}
+
 export class SutraSpeechSynthesizer {
   private synth: SpeechSynthesis | null = null
   private voice: SpeechSynthesisVoice | null = null
+  private selectedVoiceId: string = ''
   public enabled: boolean = true
   public onSentenceEnd?: () => void
+  public onVoicesLoaded?: (voices: VoiceOption[], currentId: string) => void
 
   constructor() {
     if (typeof window !== 'undefined' && 'speechSynthesis' in window) {
@@ -26,12 +36,129 @@ export class SutraSpeechSynthesizer {
   private initVoice() {
     if (!this.synth) return
     const voices = this.synth.getVoices()
-    // Prioritize natural sounding Chinese voices (Tingting / Sinji / Xiaoxiao / Meijia or any zh-CN)
-    this.voice =
-      voices.find(v => (v.name.includes('Tingting') || v.name.includes('Natural') || v.name.includes('Neural')) && v.lang.includes('zh')) ||
-      voices.find(v => v.lang.includes('zh-CN')) ||
-      voices.find(v => v.lang.includes('zh')) ||
-      null
+    if (!voices || voices.length === 0) return
+
+    // If user has a selected voice id, try to restore
+    if (this.selectedVoiceId) {
+      const found = voices.find(v => `${v.name}__${v.lang}` === this.selectedVoiceId)
+      if (found) {
+        this.voice = found
+        this.notifyVoicesLoaded()
+        return
+      }
+    }
+
+    // Default Requirement: 默认粤语女声 (Cantonese female voice)
+    // 1. Prioritize Cantonese female voice (Sinji / zh-HK / yue / Hong Kong female)
+    const cantoneseFemale = voices.find(v => this.checkIsCantonese(v) && this.checkIsFemale(v))
+    // 2. Any Cantonese voice
+    const anyCantonese = voices.find(v => this.checkIsCantonese(v))
+    // 3. Fallback to Mandarin natural female
+    const mandarinFemale = voices.find(v => (v.lang.includes('zh') || v.lang.includes('CN')) && this.checkIsFemale(v))
+    // 4. Fallback to any Chinese voice
+    const anyChinese = voices.find(v => v.lang.includes('zh'))
+
+    this.voice = cantoneseFemale || anyCantonese || mandarinFemale || anyChinese || voices[0] || null
+    if (this.voice) {
+      this.selectedVoiceId = `${this.voice.name}__${this.voice.lang}`
+    }
+    this.notifyVoicesLoaded()
+  }
+
+  private checkIsCantonese(v: SpeechSynthesisVoice): boolean {
+    const lang = (v.lang || '').toLowerCase()
+    const name = (v.name || '').toLowerCase()
+    return (
+      lang === 'zh-hk' ||
+      lang.startsWith('zh-hk') ||
+      lang === 'yue' ||
+      lang.startsWith('yue') ||
+      lang === 'zh-mo' ||
+      name.includes('sinji') ||
+      name.includes('cantonese') ||
+      name.includes('hong kong') ||
+      name.includes('香港') ||
+      name.includes('粤语') ||
+      name.includes('廣東')
+    )
+  }
+
+  private checkIsFemale(v: SpeechSynthesisVoice): boolean {
+    const name = (v.name || '').toLowerCase()
+    return (
+      name.includes('sinji') ||
+      name.includes('tingting') ||
+      name.includes('xiaoxiao') ||
+      name.includes('meijia') ||
+      name.includes('shelley') ||
+      name.includes('sandy') ||
+      name.includes('flo') ||
+      name.includes('female') ||
+      name.includes('女') ||
+      name.includes('善怡') ||
+      name.includes('美佳') ||
+      name.includes('婷婷')
+    )
+  }
+
+  private notifyVoicesLoaded() {
+    if (this.onVoicesLoaded) {
+      this.onVoicesLoaded(this.getAvailableVoiceOptions(), this.selectedVoiceId)
+    }
+  }
+
+  public getAvailableVoiceOptions(): VoiceOption[] {
+    if (!this.synth) return []
+    const voices = this.synth.getVoices()
+
+    const chineseVoices = voices.filter(v => {
+      const lang = (v.lang || '').toLowerCase()
+      const name = (v.name || '').toLowerCase()
+      return lang.includes('zh') || lang.includes('yue') || name.includes('cantonese') || name.includes('hong kong')
+    })
+
+    const list = chineseVoices.length > 0 ? chineseVoices : voices
+
+    return list.map(v => {
+      const isCantonese = this.checkIsCantonese(v)
+      let desc = v.lang
+      if (isCantonese) {
+        desc = '粤语 / 广东话'
+      } else if (v.lang.toLowerCase().includes('cn')) {
+        desc = '普通话 (中国大陆)'
+      } else if (v.lang.toLowerCase().includes('tw')) {
+        desc = '国语 (中国台湾)'
+      }
+
+      return {
+        id: `${v.name}__${v.lang}`,
+        name: v.name,
+        lang: v.lang,
+        description: desc,
+        isCantonese
+      }
+    })
+  }
+
+  public setVoice(voiceId: string): boolean {
+    if (!this.synth) return false
+    const voices = this.synth.getVoices()
+    const found = voices.find(v => `${v.name}__${v.lang}` === voiceId)
+    if (found) {
+      this.voice = found
+      this.selectedVoiceId = voiceId
+      return true
+    }
+    return false
+  }
+
+  public getSelectedVoiceId(): string {
+    return this.selectedVoiceId
+  }
+
+  public getSelectedVoiceName(): string {
+    if (!this.voice) return '默认粤语女声'
+    return this.voice.name
   }
 
   public isSpeaking(): boolean {

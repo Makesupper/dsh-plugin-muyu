@@ -27,11 +27,22 @@ export interface MeritHistoryItem {
   count: number
 }
 
+export interface VoiceItem {
+  id: string
+  name: string
+  lang: string
+  description: string
+  isCantonese: boolean
+}
+
 export interface WidgetOptions {
   onKnock?: () => void
   onToggleAuto?: () => void
   onToggleVoice?: (enabled: boolean) => void
   onSelectSutra?: (bookId: string) => void
+  onSelectVoice?: (voiceId: string) => void
+  getVoiceList?: () => VoiceItem[]
+  getCurrentVoiceId?: () => string
   sutraList: SutraItem[]
   currentBookId: string
   getMeritRecords: () => { todayMerit: number; totalMerit: number; records: MeritHistoryItem[] }
@@ -377,6 +388,11 @@ export function createMuyuFloatingPet(options: WidgetOptions) {
   sutraBtn.textContent = '选经'
   toolbar.appendChild(sutraBtn)
 
+  const voiceSelectBtn = document.createElement('button')
+  voiceSelectBtn.className = 'dsh-muyu-btn'
+  voiceSelectBtn.textContent = '发音人'
+  toolbar.appendChild(voiceSelectBtn)
+
   const meritBtn = document.createElement('button')
   meritBtn.className = 'dsh-muyu-btn'
   meritBtn.textContent = '功德簿'
@@ -544,6 +560,59 @@ export function createMuyuFloatingPet(options: WidgetOptions) {
     modalBackdrop.style.display = 'flex'
   })
 
+  // Voice Selector Sheet (发音人音色设置)
+  voiceSelectBtn.addEventListener('click', (e) => {
+    e.stopPropagation()
+    modalTitle.textContent = '🗣️ 选择诵经发音人 (默认粤语女声)'
+    modalBody.innerHTML = ''
+
+    const voices = options.getVoiceList ? options.getVoiceList() : []
+    const currentId = options.getCurrentVoiceId ? options.getCurrentVoiceId() : ''
+
+    if (voices.length === 0) {
+      const emptyTip = document.createElement('div')
+      emptyTip.style.cssText = 'color: #ffd88a; text-align: center; padding: 24px; line-height: 1.6;'
+      emptyTip.innerHTML = `
+        <div>正在检索系统中文/粤语发音人...</div>
+        <div style="font-size: 11px; color: #aaa; margin-top: 6px;">若未检测到发音人，请确保系统语音库已启用中文或粤语女声（如 Sinji / 善怡）。</div>
+      `
+      modalBody.appendChild(emptyTip)
+    } else {
+      const tipBox = document.createElement('div')
+      tipBox.style.cssText = 'font-size: 11px; color: #ffd88a; margin-bottom: 12px; padding: 6px 10px; background: rgba(212,163,89,0.15); border-radius: 6px; border: 1px solid rgba(212,163,89,0.3);'
+      tipBox.textContent = '✨ 默认推荐：粤语女声（幽雅庄严、梵音清净）。点击即可切换。'
+      modalBody.appendChild(tipBox)
+
+      voices.forEach((v) => {
+        const item = document.createElement('div')
+        const isCurrent = v.id === currentId
+        item.className = `dsh-muyu-list-item ${isCurrent ? 'active' : ''}`
+        item.innerHTML = `
+          <div>
+            <div style="font-weight: 600; color: #ffd88a;">
+              ${v.name} ${v.isCantonese ? '🌸 [粤语推荐]' : ''} ${isCurrent ? '👉 (使用中)' : ''}
+            </div>
+            <div style="font-size: 11px; color: #bba688; margin-top: 2px;">
+              ${v.description} · ${v.lang}
+            </div>
+          </div>
+          <div style="font-size: 12px; color: ${isCurrent ? '#ffd700' : '#e6c88b'}; font-weight: ${isCurrent ? 'bold' : 'normal'};">
+            ${isCurrent ? '已选' : '选择'}
+          </div>
+        `
+        item.addEventListener('click', () => {
+          if (options.onSelectVoice) {
+            options.onSelectVoice(v.id)
+          }
+          closeModal()
+        })
+        modalBody.appendChild(item)
+      })
+    }
+
+    modalBackdrop.style.display = 'flex'
+  })
+
   // Merit Record Sheet (功德簿)
   meritBtn.addEventListener('click', (e) => {
     e.stopPropagation()
@@ -613,6 +682,7 @@ export function createMuyuFloatingPet(options: WidgetOptions) {
       autoBtn.style.display = 'none'
       voiceBtn.style.display = 'none'
       sutraBtn.style.display = 'none'
+      voiceSelectBtn.style.display = 'none'
       meritBtn.style.display = 'none'
       stage.style.width = '52px'
       stage.style.height = '52px'
@@ -626,6 +696,7 @@ export function createMuyuFloatingPet(options: WidgetOptions) {
       autoBtn.style.display = 'inline-block'
       voiceBtn.style.display = 'inline-block'
       sutraBtn.style.display = 'inline-block'
+      voiceSelectBtn.style.display = 'inline-block'
       meritBtn.style.display = 'inline-block'
       stage.style.width = '134px'
       stage.style.height = '98px'
