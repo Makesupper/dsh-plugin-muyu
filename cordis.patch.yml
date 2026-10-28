@@ -1,0 +1,11 @@
+- insert:
+    - id: muyu
+      name: dsh-plugin-muyu
+      config:
+        defaultSutra: 'heart_sutra'
+        defaultSound: 'sandalwood'
+        autoKnockIntervalMs: 1200
+        voiceEnabled: true
+        voiceRate: 0.8
+        voicePitch: 0.95
+        volume: 1.0

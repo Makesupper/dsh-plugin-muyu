@@ -1,0 +1,25 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100" width="100" height="100">
+  <defs>
+    <radialGradient id="woodGrad" cx="35%" cy="30%" r="65%">
+      <stop offset="0%" stop-color="#8C4A2F"/>
+      <stop offset="60%" stop-color="#542517"/>
+      <stop offset="100%" stop-color="#2D1109"/>
+    </radialGradient>
+    <linearGradient id="slitGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#1A0703"/>
+      <stop offset="100%" stop-color="#0A0201"/>
+    </linearGradient>
+  </defs>
+  <!-- Wooden Fish Body -->
+  <path d="M50 15 C25 15, 12 35, 15 62 C17 78, 32 88, 50 88 C68 88, 83 78, 85 62 C88 35, 75 15, 50 15 Z" fill="url(#woodGrad)" stroke="#3D180E" stroke-width="2"/>
+  <!-- Fish Scale/Carving lines -->
+  <path d="M30 40 C42 30, 58 30, 70 40" fill="none" stroke="#A65F3E" stroke-width="2" stroke-linecap="round" opacity="0.6"/>
+  <path d="M25 50 C40 38, 60 38, 75 50" fill="none" stroke="#A65F3E" stroke-width="2" stroke-linecap="round" opacity="0.6"/>
+  <!-- Fish Mouth/Resonance Slit -->
+  <path d="M22 68 Q50 78 78 68 Q50 63 22 68 Z" fill="url(#slitGrad)"/>
+  <!-- Resonance Cavity End Holes -->
+  <circle cx="24" cy="68" r="4.5" fill="#0A0201"/>
+  <circle cx="76" cy="68" r="4.5" fill="#0A0201"/>
+  <!-- Mallet Strike Point Glow -->
+  <circle cx="50" cy="38" r="5" fill="#FFC371" opacity="0.25"/>
+</svg>
