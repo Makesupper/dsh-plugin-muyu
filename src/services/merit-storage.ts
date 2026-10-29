@@ -22,8 +22,18 @@ interface PersistedLedgerV1 {
 
 const MAX_RETAINED_DAYS = 3650
 const LOCK_STALE_MS = 15000
-const LOCK_TIMEOUT_MS = 3000
-const LOCK_RETRY_MS = 20
+const LOCK_TIMEOUT_MS = 250
+const LOCK_RETRY_MS = 5
+
+export class MeritStorageBusyError extends Error {
+  public readonly storageFile: string
+
+  constructor(storageFile: string) {
+    super(`merit ledger is busy: ${storageFile}`)
+    this.name = 'MeritStorageBusyError'
+    this.storageFile = storageFile
+  }
+}
 
 function expandHome(filePath: string): string {
   if (filePath === '~') return os.homedir()
@@ -47,6 +57,12 @@ function toSafeNonNegInt(val: unknown): number {
   const num = Number(val)
   if (!Number.isFinite(num) || num <= 0) return 0
   return Math.floor(num)
+}
+
+function toSafeInt(val: unknown): number {
+  const num = Number(val)
+  if (!Number.isFinite(num)) return 0
+  return Math.trunc(num)
 }
 
 /**
@@ -138,6 +154,25 @@ export class MeritStorage {
     })
   }
 
+  public addMeritDelta(
+    delta: number,
+    tokens: number = 0,
+    pendingTokens?: number
+  ): { todayMerit: number; totalMerit: number; todayTokens: number; totalTokens: number; pendingTokens: number } {
+    const safeDelta = toSafeInt(delta)
+    const safeTokens = toSafeNonNegInt(tokens)
+    return this.withLock(ledger => {
+      const bucket = this.ensureBucket(ledger.days)
+      bucket.merit += safeDelta
+      bucket.tokens += safeTokens
+      if (pendingTokens !== undefined) {
+        ledger.pendingTokens = toSafeNonNegInt(pendingTokens)
+      }
+      this.prune(ledger.days)
+      return this.buildStats(ledger.days, ledger.pendingTokens)
+    })
+  }
+
   public addTokens(
     tokens: number,
     pendingTokens?: number
@@ -167,26 +202,34 @@ export class MeritStorage {
   public consumeTokensAndKnock(
     tokens: number,
     step: number,
-    maxKnocks: number
-  ): { knocks: number; pendingTokens: number; trimmedPending: number; stats: MeritStats } {
+    maxKnocks: number,
+    capTokens: boolean = false
+  ): { knocks: number; meritDelta: number; pendingTokens: number; tokensAccepted: number; stats: MeritStats } {
     return this.withLock(ledger => {
       const bucket = this.ensureBucket(ledger.days)
-      const safeStep = Math.max(1, Math.floor(step))
+      const signedStep = Number.isFinite(Number(step)) ? Math.trunc(Number(step)) : 1
+      const absStep = Math.max(1, Math.abs(signedStep))
+      const direction = signedStep < 0 ? -1 : 1
       const safeMax = Math.max(1, Math.floor(maxKnocks))
-      const safeTokens = Math.min(toSafeNonNegInt(tokens), safeMax * safeStep)
+      const rawTokens = toSafeNonNegInt(tokens)
+      const maxTokens = safeMax * absStep
+      // Session usage is always fully recorded; only the explicit feed path caps input.
+      const acceptedTokens = capTokens ? Math.min(rawTokens, maxTokens) : rawTokens
       const previousPending = toSafeNonNegInt(ledger.pendingTokens)
-      const basePending = Math.min(previousPending, safeStep - 1)
-      const totalPool = basePending + safeTokens
-      const knocks = Math.min(safeMax, Math.floor(totalPool / safeStep))
-      const nextPending = totalPool - knocks * safeStep
-      bucket.merit += knocks
-      bucket.tokens += safeTokens
+      const totalPool = previousPending + acceptedTokens
+      const knocks = Math.min(safeMax, Math.floor(totalPool / absStep))
+      const meritDelta = direction * knocks
+      // Keep only the sub-step remainder; capped-away whole steps are not carried as backlog.
+      const nextPending = totalPool % absStep
+      bucket.merit += meritDelta
+      bucket.tokens += acceptedTokens
       ledger.pendingTokens = nextPending
       this.prune(ledger.days)
       return {
         knocks,
+        meritDelta,
         pendingTokens: nextPending,
-        trimmedPending: previousPending - basePending,
+        tokensAccepted: acceptedTokens,
         stats: this.buildStats(ledger.days, nextPending)
       }
     })
@@ -312,7 +355,7 @@ export class MeritStorage {
         for (const [k, v] of Object.entries(parsed.days as Record<string, any>)) {
           if (/^\d{4}-\d{2}-\d{2}$/.test(k) && v && typeof v === 'object') {
             days[k] = {
-              merit: toSafeNonNegInt(v.merit),
+              merit: toSafeInt(v.merit),
               tokens: toSafeNonNegInt(v.tokens)
             }
           }
@@ -336,7 +379,7 @@ export class MeritStorage {
         for (const k of allKeys) {
           if (/^\d{4}-\d{2}-\d{2}$/.test(k)) {
             days[k] = {
-              merit: toSafeNonNegInt(meritMap[k]),
+              merit: toSafeInt(meritMap[k]),
               tokens: toSafeNonNegInt(tokenMap[k])
             }
           }
@@ -353,7 +396,7 @@ export class MeritStorage {
       for (const [k, v] of Object.entries(parsed)) {
         if (/^\d{4}-\d{2}-\d{2}$/.test(k) && typeof v === 'number' && Number.isFinite(v)) {
           days[k] = {
-            merit: toSafeNonNegInt(v),
+            merit: toSafeInt(v),
             tokens: 0
           }
         } else {
@@ -386,35 +429,92 @@ export class MeritStorage {
     }
   }
 
-  private acquireLock(): boolean {
+  private acquireLock(): string | null {
     const startedAt = Date.now()
+    const token = `${process.pid}-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`
+    const payload = JSON.stringify({ pid: process.pid, token, at: Date.now() })
     while (true) {
       try {
-        fs.writeFileSync(this.lockFile, `${process.pid} ${Date.now()}`, { flag: 'wx' })
-        return true
+        fs.writeFileSync(this.lockFile, payload, { flag: 'wx' })
+        return token
       } catch (error: any) {
         if (error?.code !== 'EEXIST') {
-          console.warn('[dsh-plugin-muyu] Failed to create merit lock; writing without lock:', error)
-          return false
+          console.warn('[dsh-plugin-muyu] failed to create merit lock:', error)
+          return null
         }
-        try {
-          const stat = fs.statSync(this.lockFile)
-          if (Date.now() - stat.mtimeMs > LOCK_STALE_MS) {
-            try {
-              fs.unlinkSync(this.lockFile)
-            } catch {}
-            continue
-          }
-        } catch (statError: any) {
-          if (statError?.code === 'ENOENT') continue
-        }
+        if (this.removeStaleLock()) continue
         if (Date.now() - startedAt >= LOCK_TIMEOUT_MS) {
-          console.warn('[dsh-plugin-muyu] Merit lock timeout; writing without lock:', this.lockFile)
-          return false
+          console.warn('[dsh-plugin-muyu] merit lock still held; skipping this write:', this.lockFile)
+          return null
         }
         this.sleep(LOCK_RETRY_MS)
       }
     }
+  }
+
+  private isPidAlive(pid: number): boolean {
+    if (!Number.isInteger(pid) || pid <= 0) return false
+    try {
+      process.kill(pid, 0)
+      return true
+    } catch (error: any) {
+      return error?.code === 'EPERM'
+    }
+  }
+
+  private removeStaleLock(): boolean {
+    let raw: string
+    try {
+      raw = fs.readFileSync(this.lockFile, 'utf-8')
+    } catch {
+      return false
+    }
+
+    let meta: any = null
+    try {
+      meta = JSON.parse(raw)
+    } catch {}
+    const legacyPid = Number(raw.trim().split(/\s+/)[0])
+    const pid = meta && Number.isFinite(Number(meta.pid))
+      ? Number(meta.pid)
+      : Number.isFinite(legacyPid) && legacyPid > 0
+        ? legacyPid
+        : null
+    if (pid !== null) {
+      if (this.isPidAlive(pid)) return false
+    } else {
+      try {
+        const stat = fs.statSync(this.lockFile)
+        if (Date.now() - stat.mtimeMs < LOCK_STALE_MS) return false
+      } catch {
+        return false
+      }
+    }
+
+    // Re-read before unlink so we never delete a lock another process just created
+    // after removing the stale one.
+    let current: string
+    try {
+      current = fs.readFileSync(this.lockFile, 'utf-8')
+    } catch {
+      return false
+    }
+    if (current !== raw) return false
+    try {
+      fs.unlinkSync(this.lockFile)
+      return true
+    } catch {
+      return false
+    }
+  }
+
+  private releaseLock(token: string): void {
+    try {
+      const raw = fs.readFileSync(this.lockFile, 'utf-8')
+      const meta = JSON.parse(raw)
+      if (meta?.token !== token) return
+      fs.unlinkSync(this.lockFile)
+    } catch {}
   }
 
   private sleep(ms: number) {
@@ -422,7 +522,10 @@ export class MeritStorage {
   }
 
   private withLock<T>(fn: (ledger: LedgerData) => T): T {
-    const locked = this.acquireLock()
+    const token = this.acquireLock()
+    if (token === null) {
+      throw new MeritStorageBusyError(this.storageFile)
+    }
     try {
       const ledger = this.readLedger()
       const result = fn(ledger)
@@ -431,11 +534,7 @@ export class MeritStorage {
       this._pendingTokens = ledger.pendingTokens
       return result
     } finally {
-      if (locked) {
-        try {
-          fs.unlinkSync(this.lockFile)
-        } catch {}
-      }
+      this.releaseLock(token)
     }
   }
 }

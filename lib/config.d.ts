@@ -12,6 +12,7 @@ export interface MuyuConfig {
     storagePath?: string;
     tokenKnockEnabled?: boolean;
     tokensPerMerit?: number;
+    resetRuntimeState?: boolean;
 }
 export declare const Config: Schema<MuyuConfig>;
 //# sourceMappingURL=config.d.ts.map

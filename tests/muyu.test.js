@@ -5,7 +5,7 @@ import path from 'node:path'
 import os from 'node:os'
 import vm from 'node:vm'
 import { fileURLToPath } from 'node:url'
-import { MeritStorage, resolveDefaultStorageFile } from '../lib/services/merit-storage.js'
+import { MeritStorage, MeritStorageBusyError, resolveDefaultStorageFile } from '../lib/services/merit-storage.js'
 import { ChantService } from '../lib/services/chant-service.js'
 import { heartSutra, vajraSutra } from '../lib/data/sutras.js'
 import { soundLibrary } from '../lib/data/sounds.js'
@@ -13,7 +13,7 @@ import { MuyuService } from '../lib/services/muyu-service.js'
 import { createMuyuTools } from '../lib/tools/index.js'
 import { apply, Config } from '../lib/index.js'
 import { buildMuyuState, createMuyuRouteHandlers, registerMuyuClientApi } from '../lib/services/client-api.js'
-import { formatTokenCount } from '../lib/format.js'
+import { formatMeritCount, formatTokenCount, formatTokenLabel } from '../lib/format.js'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 let testCounter = 0
@@ -214,6 +214,41 @@ test('MeritStorage - 多实例同文件写入不互相覆盖', () => {
   }
 })
 
+test('MeritStorage - 存活进程持锁时放弃写入，不无锁覆盖', () => {
+  const tmpFile = makeUniqueTmpFile('merit_lock_busy')
+  try {
+    const storage = new MeritStorage(tmpFile)
+    storage.addMerit(1, 0)
+    const lockFile = `${tmpFile}.lock`
+    fs.writeFileSync(lockFile, JSON.stringify({ pid: process.pid, token: 'held', at: Date.now() }), 'utf-8')
+    const before = new MeritStorage(tmpFile).todayMerit
+    const started = Date.now()
+    assert.throws(
+      () => storage.addMerit(5, 0),
+      error => error instanceof MeritStorageBusyError || error?.name === 'MeritStorageBusyError'
+    )
+    assert.ok(Date.now() - started < 1500)
+    assert.equal(new MeritStorage(tmpFile).todayMerit, before)
+    fs.unlinkSync(lockFile)
+  } finally {
+    cleanupTmpFiles(tmpFile)
+  }
+})
+
+test('MeritStorage - 死亡进程的锁会被安全接管', () => {
+  const tmpFile = makeUniqueTmpFile('merit_lock_dead')
+  try {
+    const storage = new MeritStorage(tmpFile)
+    storage.addMerit(1, 0)
+    fs.writeFileSync(`${tmpFile}.lock`, JSON.stringify({ pid: 999999, token: 'dead', at: Date.now() }), 'utf-8')
+    storage.addMerit(2, 0)
+    assert.equal(new MeritStorage(tmpFile).todayMerit, 3)
+    assert.equal(fs.existsSync(`${tmpFile}.lock`), false)
+  } finally {
+    cleanupTmpFiles(tmpFile)
+  }
+})
+
 test('MuyuService - 两个宿主实例的 Token 缓冲池不会互相覆盖', () => {
   const tmpFile = makeUniqueTmpFile('service_multi')
   try {
@@ -233,6 +268,90 @@ test('MuyuService - 两个宿主实例的 Token 缓冲池不会互相覆盖', ()
     assert.equal(second.pendingTokens, 2000)
     assert.equal(a.getMeritStats().todayMerit, 1)
     assert.equal(a.getPendingTokens(), 2000)
+  } finally {
+    cleanupTmpFiles(tmpFile)
+  }
+})
+
+test('Token 驱动 - step=500 时真实 session 用量不丢', () => {
+  const tmpFile = makeUniqueTmpFile('token_step500')
+  try {
+    const fakeCtx = {
+      provide: () => {},
+      effect: fn => fn(),
+      tools: { register: () => () => {} }
+    }
+    const service = new MuyuService(fakeCtx, {
+      storagePath: tmpFile,
+      tokensPerMerit: 500,
+      tokenKnockEnabled: true
+    })
+    const res = service.consumeTokens(120000)
+    assert.equal(res.todayTokens, 120000)
+    assert.equal(res.knocksTriggered, 108)
+    assert.equal(res.truncatedTokens, 0)
+    assert.equal(res.pendingTokens, 0) // 120000 % 500
+  } finally {
+    cleanupTmpFiles(tmpFile)
+  }
+})
+
+test('Token 驱动 - 调小 step 后 pending 折算成功德而非丢弃', () => {
+  const tmpFile = makeUniqueTmpFile('token_step_change')
+  try {
+    const fakeCtx = {
+      provide: () => {},
+      effect: fn => fn(),
+      tools: { register: () => () => {} }
+    }
+    const before = new MuyuService(fakeCtx, { storagePath: tmpFile, tokensPerMerit: 10000 })
+    const pending = before.consumeTokens(9000)
+    assert.equal(pending.pendingTokens, 9000)
+    assert.equal(before.getMeritStats().todayMerit, 0)
+
+    const after = new MuyuService(fakeCtx, { storagePath: tmpFile, tokensPerMerit: 1000 })
+    assert.equal(after.getMeritStats().todayMerit, 9)
+    assert.equal(after.getPendingTokens(), 0)
+  } finally {
+    cleanupTmpFiles(tmpFile)
+  }
+})
+
+test('Token 扣功德模式 - 负 step 扣功德并保持负值', () => {
+  const tmpFile = makeUniqueTmpFile('token_deduct')
+  try {
+    const fakeCtx = {
+      provide: () => {},
+      effect: fn => fn(),
+      tools: { register: () => () => {} }
+    }
+    const service = new MuyuService(fakeCtx, {
+      storagePath: tmpFile,
+      tokensPerMerit: -10000,
+      tokenKnockEnabled: true
+    })
+    const first = service.consumeTokens(25000)
+    assert.equal(first.todayTokens, 25000)
+    assert.equal(first.todayMerit, -2)
+    assert.equal(first.meritGained, -2)
+    assert.equal(first.knocksTriggered, 0)
+    assert.equal(first.pendingTokens, 5000)
+
+    assert.equal(service.setTokensPerMerit(-500), true)
+    const fed = service.feedTokens(1200)
+    assert.equal(fed.meritGained, -12)
+    assert.equal(fed.todayMerit, -14)
+    assert.equal(fed.pendingTokens, 200)
+    assert.equal(fed.todayTokens, 26200)
+
+    const reloaded = new MuyuService(fakeCtx, {
+      storagePath: tmpFile,
+      tokensPerMerit: 10000,
+      tokenKnockEnabled: true
+    })
+    assert.equal(reloaded.getTokensPerMerit(), -500)
+    assert.equal(reloaded.getMeritStats().todayMerit, -14)
+    assert.equal(reloaded.getPendingTokens(), 200)
   } finally {
     cleanupTmpFiles(tmpFile)
   }
@@ -372,7 +491,7 @@ test('MuyuService & DSH Tools - 修持流程、session/event 真实钩子与非�
     assert.deepEqual(injected, [['webServer']])
     assert.deepEqual(
       routes.map(route => route.path),
-      ['/dsh-muyu/state', '/dsh-muyu/knock', '/dsh-muyu/auto', '/dsh-muyu/sutra']
+      ['/dsh-muyu/state', '/dsh-muyu/knock', '/dsh-muyu/auto', '/dsh-muyu/sutra', '/dsh-muyu/tokens-per-merit']
     )
     assert.ok(routes.every(route => route.kind === 'exact'))
 
@@ -405,7 +524,7 @@ test('MuyuService & DSH Tools - 修持流程、session/event 真实钩子与非�
   }
 })
 
-test('Token 驱动敲木鱼 - 跨重启持久化、大额 Token 单次封顶与 pending 截断', async () => {
+test('Token 驱动敲木鱼 - 跨重启持久化、session 完整记账与 feed 上限', async () => {
   const tmpFile = makeUniqueTmpFile('token_engine')
   try {
     const fakeCtx = {
@@ -454,32 +573,32 @@ test('Token 驱动敲木鱼 - 跨重启持久化、大额 Token 单次封顶与 
     assert.equal(badRes.pendingTokens, 2000)
     assert.equal(badRes.todayTokens, 12000)
 
-    // 4. 一次性喂入 2,000,000 Tokens：单次最多接受 1,080,000 Tokens（108 敲），
-    // 超出部分丢弃，pending 保持在阈值以内，不会留下几十万次才能消化的积压。
+    // 4. 真实 session 用量必须完整记账：2,000,000 Tokens 不截断，只封顶 108 敲。
     const burstRes = muyu2.consumeTokens(2000000)
     assert.equal(burstRes.knocksTriggered, 108)
     assert.equal(burstRes.meritGained, 108)
     assert.equal(burstRes.todayMerit, 109)
-    assert.equal(burstRes.todayTokens, 1092000)
+    assert.equal(burstRes.todayTokens, 2012000)
     assert.equal(burstRes.pendingTokens, 2000)
-    assert.equal(burstRes.truncatedTokens, 920000)
+    assert.equal(burstRes.truncatedTokens, 0)
 
-    // 5. 1e12 级别的恶意/误调用也只产生 108 敲和不足一个 step 的 pending
+    // 5. 真实 session 的 1e12 Tokens 仍然完整记入 todayTokens；只封顶 108 敲，
+    // pending 只保留不足一个 step 的余数，不会留下需要几十万次调用才能消化的积压。
     const hugeRes = muyu2.consumeTokens(1e12)
     assert.equal(hugeRes.knocksTriggered, 108)
-    assert.ok(hugeRes.pendingTokens < 10000)
-    assert.ok(hugeRes.truncatedTokens > 0)
-    assert.ok(hugeRes.todayTokens < 3000000)
+    assert.equal(hugeRes.todayTokens, 1000002012000)
+    assert.equal(hugeRes.pendingTokens, 2000)
+    assert.equal(hugeRes.truncatedTokens, 0)
     const nextRes = muyu2.consumeTokens(150000)
-    assert.equal(nextRes.knocksTriggered, 15) // 只按 150k 正常折算，不再连续 108 敲
+    assert.equal(nextRes.knocksTriggered, 15)
     assert.ok(nextRes.pendingTokens < 10000)
 
-    // 6. 模型可见的 muyu_feed_tokens 同样受单次上限保护
+    // 6. 模型可见的 muyu_feed_tokens 仍走单次输入上限（只在这一条路径丢弃超额）。
     const hugeFeed = await feedTool.execute({ tokens: 1e12 })
     assert.equal(hugeFeed.knocksTriggered, 108)
     assert.ok(hugeFeed.pendingTokens < 10000)
     assert.ok(hugeFeed.truncatedTokens > 0)
-    assert.ok(hugeFeed.todayTokens < 5000000)
+    assert.equal(hugeFeed.todayTokens, 1000003242000)
   } finally {
     cleanupTmpFiles(tmpFile)
   }
@@ -515,6 +634,25 @@ test('运行状态 - 经文句序与音色跨重启恢复', () => {
     assert.equal(service2.getSutra().id, 'vajra_sutra')
     assert.equal(service2.getCurrentSentence().id, 2)
     assert.equal(service2.getSoundType(), 'bell')
+
+    // resetRuntimeState=true 时配置重新优先，并把新的默认值写回 state
+    const serviceReset = new MuyuService(fakeCtx, {
+      storagePath: tmpFile,
+      defaultSutra: 'heart_sutra',
+      defaultSound: 'sandalwood',
+      tokensPerMerit: 10000,
+      resetRuntimeState: true
+    })
+    assert.equal(serviceReset.getSutra().id, 'heart_sutra')
+    assert.equal(serviceReset.getSoundType(), 'sandalwood')
+    const serviceAfterReset = new MuyuService(fakeCtx, {
+      storagePath: tmpFile,
+      defaultSutra: 'heart_sutra',
+      defaultSound: 'sandalwood',
+      tokensPerMerit: 10000
+    })
+    assert.equal(serviceAfterReset.getSutra().id, 'heart_sutra')
+    assert.equal(serviceAfterReset.getSoundType(), 'sandalwood')
 
     // 损坏的 state 文件不应阻止服务启动，回落到默认经文/音色
     fs.writeFileSync(`${tmpFile}.state.json`, '{broken', 'utf-8')
@@ -673,7 +811,7 @@ test('Client API - 前端与服务端工具共用同一本账，并驱动挂件�
     const dispose = registerMuyuClientApi(routeWebServer, muyu)
     assert.deepEqual(
       routes.map(route => route.path),
-      ['/dsh-muyu/state', '/dsh-muyu/knock', '/dsh-muyu/auto', '/dsh-muyu/sutra']
+      ['/dsh-muyu/state', '/dsh-muyu/knock', '/dsh-muyu/auto', '/dsh-muyu/sutra', '/dsh-muyu/tokens-per-merit']
     )
     assert.ok(routes.every(route => route.kind === 'exact'))
     dispose()
@@ -685,12 +823,52 @@ test('Client API - 前端与服务端工具共用同一本账，并驱动挂件�
     assert.equal(snapshot.bookId, 'vajra_sutra')
     assert.ok(Array.isArray(snapshot.records))
     assert.ok(snapshot.lastSentence)
+
+    // 9b. 前端可调整 tokensPerMerit，负数进入扣功德模式
+    const setStep = await invokeRoute(
+      handlers.tokensPerMerit,
+      'POST',
+      '/dsh-muyu/tokens-per-merit',
+      JSON.stringify({ value: 500 })
+    )
+    assert.equal(setStep.status, 200)
+    assert.equal(setStep.json.state.tokensPerMerit, 500)
+    const setNegative = await invokeRoute(
+      handlers.tokensPerMerit,
+      'POST',
+      '/dsh-muyu/tokens-per-merit',
+      JSON.stringify({ value: -10000 })
+    )
+    assert.equal(setNegative.status, 200)
+    assert.equal(setNegative.json.state.tokensPerMerit, -10000)
+    assert.equal(muyu.getTokensPerMerit(), -10000)
+    const zeroStep = await invokeRoute(
+      handlers.tokensPerMerit,
+      'POST',
+      '/dsh-muyu/tokens-per-merit',
+      JSON.stringify({ value: 0 })
+    )
+    assert.equal(zeroStep.status, 400)
+    await invokeRoute(handlers.tokensPerMerit, 'POST', '/dsh-muyu/tokens-per-merit', JSON.stringify({ value: 10000 }))
+
+    // 10. 未知宿主 API（没有 getOrigin/host/port）回退到 loopback-only 校验，并保持跨站拒绝
+    const unknownHandlers = createMuyuRouteHandlers(muyu, {})
+    const unknownGet = await invokeRoute(unknownHandlers.state, 'GET', '/dsh-muyu/state')
+    assert.equal(unknownGet.status, 200)
+    const unknownEvilOrigin = await invokeRoute(unknownHandlers.state, 'GET', '/dsh-muyu/state', undefined, {
+      origin: 'http://evil.example'
+    })
+    assert.equal(unknownEvilOrigin.status, 403)
+    const unknownEvilHost = await invokeRoute(unknownHandlers.state, 'GET', '/dsh-muyu/state', undefined, {
+      host: 'evil.example:12345'
+    })
+    assert.equal(unknownEvilHost.status, 403)
   } finally {
     cleanupTmpFiles(tmpFile)
   }
 })
 
-test('Token 显示单位 - 1M 以上用 M，千位用 k', () => {
+test('Token/功德显示 - M、圆满与千分逗号', () => {
   assert.equal(formatTokenCount(0), '0')
   assert.equal(formatTokenCount(999), '999')
   assert.equal(formatTokenCount(1000), '1k')
@@ -701,6 +879,14 @@ test('Token 显示单位 - 1M 以上用 M，千位用 k', () => {
   assert.equal(formatTokenCount(1000000), '1M')
   assert.equal(formatTokenCount(1234567), '1.2M')
   assert.equal(formatTokenCount(29634326), '29.6M')
+  assert.equal(formatTokenCount(108000000), '1圆满')
+  assert.equal(formatTokenCount(118000000), '1.1圆满')
+  assert.equal(formatTokenCount(216000000), '2圆满')
+  assert.equal(formatTokenLabel(12000), '12k Tokens')
+  assert.equal(formatTokenLabel(108000000), '1圆满')
+  assert.equal(formatMeritCount(1234), '1,234')
+  assert.equal(formatMeritCount(-1234), '-1,234')
+  assert.equal(formatMeritCount(0), '0')
 })
 
 test('客户端打包产物 lib/client.js 完整性与单一账本接线', () => {
@@ -831,7 +1017,9 @@ test('客户端挂件轮询服务端账本并触发 Token 功德动画', async (
     }
     if (target.endsWith('/state')) {
       stateCalls += 1
-      return { ok: true, json: async () => (stateCalls <= 1 ? serverState(0, 0) : serverState(1, 12000)) }
+      if (stateCalls <= 1) return { ok: true, json: async () => serverState(0, 0) }
+      if (stateCalls === 2) return { ok: true, json: async () => serverState(1, 12000) }
+      return { ok: true, json: async () => serverState(-1, 24000) }
     }
     return { ok: false, status: 404, json: async () => ({}) }
   }
@@ -888,6 +1076,14 @@ test('客户端挂件轮询服务端账本并触发 Token 功德动画', async (
   assert.ok(tokenBar.textContent.includes('12k Tokens'), tokenBar.textContent)
   assert.ok(tokenBar.textContent.includes('功德: 1'), tokenBar.textContent)
   assert.ok(sparks.some(el => el.textContent.includes('Tokens')), 'Token merit should trigger a knock effect')
+
+  // 扣功德模式：下一次轮询功德从 1 -> -1，应触发损失提示并允许负功德显示
+  await new Promise(resolve => setTimeout(resolve, 900))
+  assert.ok(tokenBar.textContent.includes('功德: -1'), tokenBar.textContent)
+  assert.ok(
+    created.some(el => typeof el.textContent === 'string' && el.textContent.includes('功德 -1')),
+    'negative merit delta should trigger a loss effect'
+  )
 
   const soundBtn = created.find(el => typeof el.className === 'string' && el.className.includes('dsh-muyu-sound-pill'))
   assert.ok(soundBtn, 'wooden-fish sound toggle should be rendered')

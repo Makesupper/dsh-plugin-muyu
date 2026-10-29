@@ -141,6 +141,16 @@ function expectedOrigin(webServer: any): URL | null {
   return null
 }
 
+let warnedMissingOrigin = false
+
+function warnMissingOrigin(): void {
+  if (warnedMissingOrigin) return
+  warnedMissingOrigin = true
+  console.warn(
+    '[dsh-plugin-muyu] webserver origin is unavailable; falling back to loopback-only Host/Origin checks'
+  )
+}
+
 function isLoopbackHostname(hostname: string): boolean {
   const host = hostname.toLowerCase().replace(/^\[|\]$/g, '')
   return host === '127.0.0.1' || host === 'localhost' || host === '::1'
@@ -154,7 +164,15 @@ function allowedHost(req: JsonRequest, webServer: any): boolean {
   const host = (headerValue(req, 'host') || '').trim().toLowerCase()
   if (!host) return false
   const expected = expectedOrigin(webServer)
-  if (!expected) return false
+  if (!expected) {
+    warnMissingOrigin()
+    if (host === 'dsh-app') return true
+    try {
+      return isLoopbackHostname(new URL(`http://${host}`).hostname)
+    } catch {
+      return false
+    }
+  }
   if (host === expected.host.toLowerCase()) return true
   const port = defaultPort(expected)
   return [`127.0.0.1:${port}`, `localhost:${port}`, `[::1]:${port}`].includes(host)
@@ -166,7 +184,15 @@ function allowedOrigin(req: JsonRequest, webServer: any): boolean {
   if (!origin) return true
   if (origin === 'dsh-app://app') return true
   const expected = expectedOrigin(webServer)
-  if (!expected) return false
+  if (!expected) {
+    warnMissingOrigin()
+    try {
+      const parsed = new URL(origin)
+      return (parsed.protocol === 'http:' || parsed.protocol === 'https:') && isLoopbackHostname(parsed.hostname)
+    } catch {
+      return false
+    }
+  }
   if (origin === expected.origin) return true
   try {
     const parsed = new URL(origin)
@@ -277,6 +303,27 @@ export function createMuyuRouteHandlers(muyu: MuyuService, webServer?: any) {
     sendJson(res, 200, { state: buildMuyuState(muyu) })
   })
 
+  const tokensPerMerit = guard(async (req, res) => {
+    if (!checkRequestOrigin(req, res, webServer)) return
+    if ((req.method || '').toUpperCase() !== 'POST') {
+      methodNotAllowed(res, 'POST')
+      return
+    }
+    if (!requireJsonContentType(req, res)) return
+    const body = await readJsonBody(req)
+    const value = Number(body?.value)
+    if (!Number.isFinite(value) || value === 0 || Math.abs(value) > 10000000) {
+      sendJson(res, 400, { error: 'value must be a non-zero integer within +/-10,000,000' })
+      return
+    }
+    const step = Math.trunc(value)
+    if (step === 0 || !muyu.setTokensPerMerit(step)) {
+      sendJson(res, 400, { error: 'invalid tokensPerMerit' })
+      return
+    }
+    sendJson(res, 200, { state: buildMuyuState(muyu) })
+  })
+
   const sutra = guard(async (req, res) => {
     if (!checkRequestOrigin(req, res, webServer)) return
     if ((req.method || '').toUpperCase() !== 'POST') {
@@ -297,7 +344,7 @@ export function createMuyuRouteHandlers(muyu: MuyuService, webServer?: any) {
     sendJson(res, 200, { state: buildMuyuState(muyu) })
   })
 
-  return { state, knock, auto, sutra }
+  return { state, knock, auto, sutra, tokensPerMerit }
 }
 
 /**
@@ -313,7 +360,8 @@ export function registerMuyuClientApi(webServer: any, muyu: MuyuService): () => 
     { kind: 'exact', path: `${MUYU_API_PREFIX}/state`, handler: handlers.state },
     { kind: 'exact', path: `${MUYU_API_PREFIX}/knock`, handler: handlers.knock },
     { kind: 'exact', path: `${MUYU_API_PREFIX}/auto`, handler: handlers.auto },
-    { kind: 'exact', path: `${MUYU_API_PREFIX}/sutra`, handler: handlers.sutra }
+    { kind: 'exact', path: `${MUYU_API_PREFIX}/sutra`, handler: handlers.sutra },
+    { kind: 'exact', path: `${MUYU_API_PREFIX}/tokens-per-merit`, handler: handlers.tokensPerMerit }
   ]
   const disposers = routes.map(route => {
     try {

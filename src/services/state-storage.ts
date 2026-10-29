@@ -7,6 +7,7 @@ export interface RuntimeState {
   bookId?: string
   sentenceIndex?: number
   soundType?: MuyuSoundType
+  tokensPerMerit?: number
 }
 
 export function resolveRuntimeStateFile(storagePath?: string): string {
@@ -29,6 +30,16 @@ export class RuntimeStateStorage {
     return this.file
   }
 
+  public clear(): void {
+    try {
+      if (fs.existsSync(this.file)) {
+        fs.unlinkSync(this.file)
+      }
+    } catch (error) {
+      console.warn('[dsh-plugin-muyu] Failed to clear runtime state:', error)
+    }
+  }
+
   public load(): RuntimeState {
     try {
       if (!fs.existsSync(this.file)) return {}
@@ -44,6 +55,13 @@ export class RuntimeStateStorage {
         soundType:
           soundType === 'sandalwood' || soundType === 'whitewood' || soundType === 'bell'
             ? soundType
+            : undefined,
+        tokensPerMerit:
+          typeof parsed.tokensPerMerit === 'number' &&
+          Number.isFinite(parsed.tokensPerMerit) &&
+          parsed.tokensPerMerit !== 0 &&
+          Math.abs(parsed.tokensPerMerit) <= 10000000
+            ? Math.trunc(parsed.tokensPerMerit)
             : undefined
       }
     } catch (error) {
@@ -52,7 +70,7 @@ export class RuntimeStateStorage {
     }
   }
 
-  public save(state: Required<RuntimeState>): void {
+  public save(state: RuntimeState): void {
     try {
       const dir = path.dirname(this.file)
       if (!fs.existsSync(dir)) {
@@ -61,8 +79,12 @@ export class RuntimeStateStorage {
       const payload = {
         version: 1,
         bookId: state.bookId,
-        sentenceIndex: Math.max(0, Math.floor(state.sentenceIndex)),
+        sentenceIndex: Math.max(0, Math.floor(state.sentenceIndex ?? 0)),
         soundType: state.soundType,
+        tokensPerMerit:
+          typeof state.tokensPerMerit === 'number' && Number.isFinite(state.tokensPerMerit) && state.tokensPerMerit !== 0
+            ? Math.trunc(state.tokensPerMerit)
+            : undefined,
         updatedAt: Date.now()
       }
       const tmpFile = `${this.file}.tmp-${process.pid}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`

@@ -26,7 +26,11 @@ export function apply(ctx: Context, config: MuyuConfig = {}) {
           (Number(u.cacheReadTokens) || 0) +
           (Number(u.cacheWriteTokens) || 0)
         if (tokens > 0) {
-          muyu.consumeTokens(tokens)
+          try {
+            muyu.consumeTokens(tokens)
+          } catch (error) {
+            console.warn('[dsh-plugin-muyu] failed to record session token usage:', error)
+          }
         }
       })
     })

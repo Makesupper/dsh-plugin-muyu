@@ -54,4 +54,5 @@ declare var process: {
   pid: number
   execPath: string
   cwd(): string
+  kill(pid: number, signal?: number | string): boolean
 }

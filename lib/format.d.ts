@@ -1,6 +1,6 @@
-/**
- * Compact Token display used by both the Host tool output and the browser widget.
- * >= 1M is shown in M, otherwise >= 1k in k; small values stay exact.
- */
 export declare function formatTokenCount(value: unknown): string;
+/** Unit-bearing token label; "圆满" already reads as a unit, so it gets no "Tokens" suffix. */
+export declare function formatTokenLabel(value: unknown): string;
+/** Merit counts use thousands separators, including negative deduction-mode values. */
+export declare function formatMeritCount(value: unknown): string;
 //# sourceMappingURL=format.d.ts.map

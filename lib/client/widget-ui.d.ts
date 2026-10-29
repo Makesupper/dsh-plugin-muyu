@@ -33,6 +33,8 @@ export interface WidgetOptions {
     onToggleVoice?: (enabled: boolean) => void;
     onToggleSound?: (enabled: boolean) => void;
     onSelectSutra?: (bookId: string) => void;
+    getTokensPerMerit?: () => number;
+    onSetTokensPerMerit?: (value: number) => Promise<boolean> | boolean | void;
     onSelectVoice?: (voiceId: string) => void;
     onSelectSound?: (soundId: MuyuSoundType) => void;
     onOpenMerit?: () => void;

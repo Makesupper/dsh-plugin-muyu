@@ -7,6 +7,7 @@ export declare class MuyuService {
     private storage;
     private chantService;
     private stateStorage;
+    private tokensPerMeritOverride;
     private currentSound;
     private autoKnockTimer;
     private autoStatus;
@@ -35,9 +36,20 @@ export declare class MuyuService {
      * Consume LLM tokens, accumulate remainder in persistent pendingTokens, and trigger up to 108 knocks per call
      * with a single disk write.
      */
+    /**
+     * Session/event usage: record the full token count, cap only the number of knocks.
+     * The sub-step remainder is kept; capped-away whole steps are not carried as backlog.
+     */
     consumeTokens(tokens: number): TokenConsumeResult;
+    /**
+     * Manual/external feed: cap the accepted input at 108 x tokensPerMerit so a single
+     * bad call cannot leave a multi-billion pending queue. Excess input is reported.
+     */
+    feedTokens(tokens: number): TokenConsumeResult;
+    private consumeTokenAmount;
     getPendingTokens(): number;
     getTokensPerMerit(): number;
+    setTokensPerMerit(value: number): boolean;
     startAutoKnock(targetCount?: number, intervalMs?: number, cycleTitle?: string, maxDurationMs?: number): AutoKnockStatus;
     stopAutoKnock(): AutoKnockStatus;
     getAutoKnockStatus(): AutoKnockStatus;

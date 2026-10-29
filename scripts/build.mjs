@@ -6,7 +6,6 @@
 
 import fs from 'node:fs'
 import path from 'node:path'
-import os from 'node:os'
 import vm from 'node:vm'
 import { fileURLToPath } from 'node:url'
 import { execFileSync, spawnSync } from 'node:child_process'
@@ -19,10 +18,10 @@ const LIB_DIR = path.join(ROOT, 'lib')
 
 function findExecutable(binName) {
   const candidates = [
+    process.env.TSC,
     path.join(ROOT, 'node_modules', '.bin', binName),
-    path.join(ROOT, '..', 'node_modules', '.bin', binName),
-    path.join(os.homedir(), 'vibe-coding', 'node_modules', '.bin', binName)
-  ]
+    path.join(ROOT, '..', 'node_modules', '.bin', binName)
+  ].filter(Boolean)
   for (const c of candidates) {
     if (fs.existsSync(c)) return c
   }

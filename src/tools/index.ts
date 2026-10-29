@@ -1,6 +1,6 @@
 import type { MuyuService } from '../services/muyu-service.js'
 import { soundLibrary } from '../data/sounds.js'
-import { formatTokenCount } from '../format.js'
+import { formatMeritCount, formatTokenLabel } from '../format.js'
 import type { MuyuSoundType } from '../types.js'
 
 const VALID_CYCLES = new Set([0, 9, 21, 49, 108, 1080])
@@ -27,8 +27,8 @@ export function createMuyuTools(muyu: MuyuService) {
     output: {
       schema: { type: 'object' },
       render: (_args: any, res: any) => {
-        let text = `🪷 功德 +${res.amount}！\n`
-        text += `【今日服务端功德】${res.todayMerit}  |  【历劫总功德】${res.totalMerit}\n`
+        let text = `🪷 功德 +${formatMeritCount(res.amount)}！\n`
+        text += `【今日服务端功德】${formatMeritCount(res.todayMerit)}  |  【历劫总功德】${formatMeritCount(res.totalMerit)}\n`
         text += `【当前诵读】《${res.currentSentence.bookTitle}》第 ${res.currentSentence.id + 1} 句：\n`
         text += `「${res.currentSentence.text}」\n`
         text += `【下一句】「${res.nextSentence.text}」\n`
@@ -156,14 +156,17 @@ export function createMuyuTools(muyu: MuyuService) {
       schema: { type: 'object' },
       render: (_args: any, res: any) => {
         let text = `📿 【服务端功德簿总览】\n`
-        text += `• 今日修行功德：${res.todayMerit} (今日共度 ${formatTokenCount(res.todayTokens)} Tokens)\n`
-        text += `• 历劫累积功德：${res.totalMerit} (历劫共度 ${formatTokenCount(res.totalTokens)} Tokens)\n`
+        text += `• 今日修行功德：${formatMeritCount(res.todayMerit)} (今日共度 ${formatTokenLabel(res.todayTokens)})\n`
+        text += `• 历劫累积功德：${formatMeritCount(res.totalMerit)} (历劫共度 ${formatTokenLabel(res.totalTokens)})\n`
         text += `• 缓冲池蓄力余数：${res.pendingTokens ?? 0} Tokens\n\n`
         text += `📅 【近期修行记录】\n`
         if (res.records && res.records.length > 0) {
           for (const item of res.records.slice(0, 7)) {
-            const tokInfo = item.tokens ? ` (消耗 ${formatTokenCount(item.tokens)} Tokens)` : ''
-            text += `  - ${item.displayDate} (${item.dateKey})：积攒 ${item.count} 功德${tokInfo}\n`
+            const tokInfo = item.tokens ? ` (消耗 ${formatTokenLabel(item.tokens)})` : ''
+            const meritText = item.count >= 0
+              ? `积攒 ${formatMeritCount(item.count)} 功德`
+              : `扣 ${formatMeritCount(-item.count)} 功德`
+            text += `  - ${item.displayDate} (${item.dateKey})：${meritText}${tokInfo}\n`
           }
         } else {
           text += `  (暂无历史记录)\n`
@@ -292,20 +295,26 @@ export function createMuyuTools(muyu: MuyuService) {
       schema: { type: 'object' },
       render: (_args: any, res: any) => {
         const step = res.tokensPerMerit ?? 10000
-        let text = `⚡ 补记消耗 ${formatTokenCount(res.tokensConsumed)} Tokens（兑换阈值：${step} Tokens/功德）！\n`
+        const absStep = Math.abs(step)
+        const modeText = step < 0
+          ? `每 ${formatMeritCount(absStep)} Tokens 扣 1 功德`
+          : `每 ${formatMeritCount(step)} Tokens 增加 1 功德`
+        let text = `⚡ 补记消耗 ${formatTokenLabel(res.tokensConsumed)}（${modeText}）！\n`
         if (res.truncatedTokens && res.truncatedTokens > 0) {
-          text += `⚠️ 单次最多处理 ${formatTokenCount(step * 108)} Tokens，已忽略 ${formatTokenCount(res.truncatedTokens)} Tokens，避免缓冲池积压。\n`
+          text += `⚠️ 单次最多处理 ${formatTokenLabel(absStep * 108)}，已忽略 ${formatTokenLabel(res.truncatedTokens)}，避免缓冲池积压。\n`
         }
-        if (res.knocksTriggered > 0) {
-          text += `🪷 功德 +${res.meritGained}（触发木鱼敲击 ${res.knocksTriggered} 次）！\n`
+        if (res.meritGained < 0) {
+          text += `💥 扣功德 ${formatMeritCount(-res.meritGained)}（趣味扣功德模式）！\n`
+        } else if (res.meritGained > 0) {
+          text += `🪷 功德 +${formatMeritCount(res.meritGained)}（触发木鱼敲击 ${res.knocksTriggered} 次）！\n`
           const last = res.knockResults[res.knockResults.length - 1]
           if (last) {
             text += `【诵读推进】《${last.currentSentence.bookTitle}》：「${last.currentSentence.text}」\n`
           }
         } else {
-          text += `🪵 功德蓄力中：当前缓冲池已积攒 ${res.pendingTokens} / ${step} Tokens，静待下次敲击！\n`
+          text += `🪵 功德蓄力中：当前缓冲池已积攒 ${res.pendingTokens} / ${formatMeritCount(absStep)} Tokens，静待下次${step < 0 ? '扣减' : '敲击'}！\n`
         }
-        text += `【今日修行】今日 Token: ${formatTokenCount(res.todayTokens)} | 今日功德: ${res.todayMerit} (历劫: ${res.totalMerit})`
+        text += `【今日修行】今日 Token: ${formatTokenLabel(res.todayTokens)} | 今日功德: ${formatMeritCount(res.todayMerit)} (历劫: ${formatMeritCount(res.totalMerit)})`
         return [{ type: 'text', text }]
       }
     },
@@ -314,7 +323,7 @@ export function createMuyuTools(muyu: MuyuService) {
       const tokens = Number.isFinite(rawTokens) && rawTokens > 0
         ? Math.round(rawTokens)
         : 0
-      const res = muyu.consumeTokens(tokens)
+      const res = muyu.feedTokens(tokens)
       return {
         ...res,
         tokensPerMerit: muyu.getTokensPerMerit()

@@ -3,6 +3,7 @@ export interface RuntimeState {
     bookId?: string;
     sentenceIndex?: number;
     soundType?: MuyuSoundType;
+    tokensPerMerit?: number;
 }
 export declare function resolveRuntimeStateFile(storagePath?: string): string;
 /**
@@ -14,7 +15,8 @@ export declare class RuntimeStateStorage {
     private file;
     constructor(storagePath?: string);
     get path(): string;
+    clear(): void;
     load(): RuntimeState;
-    save(state: Required<RuntimeState>): void;
+    save(state: RuntimeState): void;
 }
 //# sourceMappingURL=state-storage.d.ts.map

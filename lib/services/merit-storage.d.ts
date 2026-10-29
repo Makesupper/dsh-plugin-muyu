@@ -1,4 +1,8 @@
 import type { MeritStats } from '../types.js';
+export declare class MeritStorageBusyError extends Error {
+    readonly storageFile: string;
+    constructor(storageFile: string);
+}
 export declare function resolveDefaultStorageFile(customPath?: string): string;
 /**
  * Single-host persistent ledger for daily merit, token consumption, and pending token remainder.
@@ -29,6 +33,13 @@ export declare class MeritStorage {
         totalTokens: number;
         pendingTokens: number;
     };
+    addMeritDelta(delta: number, tokens?: number, pendingTokens?: number): {
+        todayMerit: number;
+        totalMerit: number;
+        todayTokens: number;
+        totalTokens: number;
+        pendingTokens: number;
+    };
     addTokens(tokens: number, pendingTokens?: number): {
         todayTokens: number;
         totalTokens: number;
@@ -39,10 +50,11 @@ export declare class MeritStorage {
      * merit knocks in the same locked write. A legacy backlog is truncated to below one step so
      * a single bogus feed can never leave a multi-billion pending queue behind.
      */
-    consumeTokensAndKnock(tokens: number, step: number, maxKnocks: number): {
+    consumeTokensAndKnock(tokens: number, step: number, maxKnocks: number, capTokens?: boolean): {
         knocks: number;
+        meritDelta: number;
         pendingTokens: number;
-        trimmedPending: number;
+        tokensAccepted: number;
         stats: MeritStats;
     };
     getStats(): MeritStats;
@@ -54,6 +66,9 @@ export declare class MeritStorage {
     private readLedger;
     private writeLedger;
     private acquireLock;
+    private isPidAlive;
+    private removeStaleLock;
+    private releaseLock;
     private sleep;
     private withLock;
 }

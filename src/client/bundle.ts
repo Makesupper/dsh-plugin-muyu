@@ -12,7 +12,7 @@ import { createMuyuFloatingPet, type MeritHistoryItem, type WidgetOptions } from
 import { MuyuWebAudioPlayer } from './sound-player.js'
 import { SutraSpeechSynthesizer } from './speech-synthesizer.js'
 import { allBooks } from '../data/sutras.js'
-import { formatTokenCount } from '../format.js'
+import { formatMeritCount, formatTokenLabel } from '../format.js'
 import type { MuyuSoundType } from '../types.js'
 
 const API_BASE = '/dsh-muyu'
@@ -123,6 +123,7 @@ function buildExports(_require?: any) {
       let currentBook = allBooks[0]
       let lastMerit = -1
       let lastTokens = -1
+      let meritInitialized = false
       let lastChantSeq = -1
       let displaySentenceText: string | null = null
       let pendingSentenceText: string | null = null
@@ -197,6 +198,12 @@ function buildExports(_require?: any) {
         }
       }
 
+      function animateMeritLoss(loss: number, tokenDelta: number): void {
+        if (!alive) return
+        pet.triggerKnockEffect(`⚡ ${formatTokenLabel(tokenDelta)} · 功德 -${formatMeritCount(loss)}`)
+        updatePetView()
+      }
+
       function animateMerit(delta: number, tokenDelta: number): void {
         const count = Math.min(delta, MAX_VISUAL_BURST)
         for (let i = 0; i < count; i++) {
@@ -208,11 +215,11 @@ function buildExports(_require?: any) {
             if (i === 0) {
               const label =
                 tokenDelta > 0
-                  ? `⚡ ${formatTokenCount(tokenDelta)} Tokens · 功德 +${delta}`
-                  : `功德 +${delta}`
+                  ? `⚡ ${formatTokenLabel(tokenDelta)} · 功德 +${formatMeritCount(delta)}`
+                  : `功德 +${formatMeritCount(delta)}`
               pet.triggerKnockEffect(label)
             } else {
-              pet.triggerKnockEffect('功德 +1')
+              pet.triggerKnockEffect(`功德 +${formatMeritCount(1)}`)
             }
             updatePetView()
           }, i * 130)
@@ -222,7 +229,7 @@ function buildExports(_require?: any) {
           const timer = setTimeout(() => {
             burstTimers.delete(timer)
             if (!alive) return
-            pet.triggerKnockEffect(`功德 +${delta}`)
+            pet.triggerKnockEffect(`功德 +${formatMeritCount(delta)}`)
           }, 450)
           burstTimers.add(timer)
         }
@@ -254,12 +261,18 @@ function buildExports(_require?: any) {
           historyRecords = next.records
         }
 
-        if (opts.animate && prevMerit >= 0 && next.todayMerit > prevMerit) {
-          animateMerit(next.todayMerit - prevMerit, Math.max(0, next.todayTokens - prevTokens))
+        if (opts.animate && meritInitialized) {
+          const tokenDelta = Math.max(0, next.todayTokens - prevTokens)
+          if (next.todayMerit > prevMerit) {
+            animateMerit(next.todayMerit - prevMerit, tokenDelta)
+          } else if (next.todayMerit < prevMerit) {
+            animateMeritLoss(prevMerit - next.todayMerit, tokenDelta)
+          }
         }
 
         lastMerit = next.todayMerit
         lastTokens = next.todayTokens
+        meritInitialized = true
         lastChantSeq = next.chantSeq
 
         const currentText = next.currentSentence?.text || ''
@@ -294,6 +307,20 @@ function buildExports(_require?: any) {
         currentBookId: currentBook.id,
         initialVoiceEnabled: prefs.voiceEnabled,
         initialSoundEnabled: prefs.soundEnabled,
+        getTokensPerMerit: () => serverState?.tokensPerMerit ?? 10000,
+        onSetTokensPerMerit: async (value: number) => {
+          try {
+            const res = await apiRequest('/tokens-per-merit', {
+              method: 'POST',
+              body: JSON.stringify({ value })
+            })
+            applyState(res.state, { animate: false })
+            return true
+          } catch {
+            pet.triggerKnockEffect('阈值保存失败')
+            return false
+          }
+        },
         getMeritRecords: () => ({
           todayMerit: serverState?.todayMerit ?? 0,
           totalMerit: serverState?.totalMerit ?? 0,

@@ -42,6 +42,7 @@ export declare function createMuyuRouteHandlers(muyu: MuyuService, webServer?: a
     knock: (req: JsonRequest, res: JsonResponse) => void;
     auto: (req: JsonRequest, res: JsonResponse) => void;
     sutra: (req: JsonRequest, res: JsonResponse) => void;
+    tokensPerMerit: (req: JsonRequest, res: JsonResponse) => void;
 };
 /**
  * Register the widget API on the host web server. Returns a disposer that
