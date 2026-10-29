@@ -73,6 +73,7 @@ export interface AutoKnockStatus {
 
 export interface TokenConsumeResult {
   tokensConsumed: number
+  truncatedTokens?: number
   pendingTokens: number
   knocksTriggered: number
   meritGained: number

@@ -29,6 +29,21 @@ export class ChantService {
     return true
   }
 
+  public getSentenceIndex(): number {
+    return this.currentSentenceIndex
+  }
+
+  public restore(bookId: string, sentenceIndex: number): boolean {
+    const book = sutraBookMap.get(bookId)
+    if (!book) return false
+    this.currentBook = book
+    const last = Math.max(0, book.sentences.length - 1)
+    const index = Number.isFinite(sentenceIndex) ? Math.floor(sentenceIndex) : 0
+    this.currentSentenceIndex = Math.min(last, Math.max(0, index))
+    this.completedCycles = 0
+    return true
+  }
+
   public getCurrentSentence(): SutraSentence {
     const sentences = this.currentBook.sentences
     const text = sentences[this.currentSentenceIndex] || sentences[0]

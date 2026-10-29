@@ -41,7 +41,10 @@ type JsonResponse = {
   end(body?: string): unknown
 }
 
-const MAX_BODY_CHARS = 64 * 1024
+const MAX_BODY_CHARS = 8 * 1024
+const MAX_CYCLE_TITLE = 80
+const MAX_BOOK_ID = 64
+const MAX_ACTION_CHARS = 16
 
 export function buildMuyuState(muyu: MuyuService, includeHistory: boolean = false): MuyuClientState {
   const stats = muyu.getMeritStats()
@@ -115,6 +118,86 @@ function clampInteger(value: unknown, fallback: number, min: number, max: number
   return Math.min(max, Math.max(min, Math.floor(num)))
 }
 
+function headerValue(req: JsonRequest, name: string): string | undefined {
+  const value = req.headers?.[name]
+  return Array.isArray(value) ? value[0] : value
+}
+
+function expectedOrigin(webServer: any): URL | null {
+  try {
+    if (typeof webServer?.getOrigin === 'function') {
+      const origin = webServer.getOrigin()
+      if (origin) return new URL(String(origin))
+    }
+  } catch {}
+  try {
+    const protocol = typeof webServer?.protocol === 'string' ? webServer.protocol : 'http:'
+    const host = webServer?.host
+    const port = webServer?.port
+    if (host && port !== undefined) {
+      return new URL(`${protocol}//${host}:${port}`)
+    }
+  } catch {}
+  return null
+}
+
+function isLoopbackHostname(hostname: string): boolean {
+  const host = hostname.toLowerCase().replace(/^\[|\]$/g, '')
+  return host === '127.0.0.1' || host === 'localhost' || host === '::1'
+}
+
+function defaultPort(url: URL): string {
+  return url.port || (url.protocol === 'https:' ? '443' : '80')
+}
+
+function allowedHost(req: JsonRequest, webServer: any): boolean {
+  const host = (headerValue(req, 'host') || '').trim().toLowerCase()
+  if (!host) return false
+  const expected = expectedOrigin(webServer)
+  if (!expected) return false
+  if (host === expected.host.toLowerCase()) return true
+  const port = defaultPort(expected)
+  return [`127.0.0.1:${port}`, `localhost:${port}`, `[::1]:${port}`].includes(host)
+}
+
+function allowedOrigin(req: JsonRequest, webServer: any): boolean {
+  const origin = headerValue(req, 'origin')
+  // Electron's dsh-app:// protocol bridge forwards requests without an Origin header.
+  if (!origin) return true
+  if (origin === 'dsh-app://app') return true
+  const expected = expectedOrigin(webServer)
+  if (!expected) return false
+  if (origin === expected.origin) return true
+  try {
+    const parsed = new URL(origin)
+    if (parsed.protocol !== expected.protocol) return false
+    return defaultPort(parsed) === defaultPort(expected) && isLoopbackHostname(parsed.hostname)
+  } catch {
+    return false
+  }
+}
+
+function requireJsonContentType(req: JsonRequest, res: JsonResponse): boolean {
+  const contentType = (headerValue(req, 'content-type') || '').split(';')[0].trim().toLowerCase()
+  if (contentType !== 'application/json') {
+    sendJson(res, 415, { error: 'content-type must be application/json' })
+    return false
+  }
+  return true
+}
+
+function checkRequestOrigin(req: JsonRequest, res: JsonResponse, webServer: any): boolean {
+  if (!allowedHost(req, webServer)) {
+    sendJson(res, 403, { error: 'forbidden host' })
+    return false
+  }
+  if (!allowedOrigin(req, webServer)) {
+    sendJson(res, 403, { error: 'forbidden origin' })
+    return false
+  }
+  return true
+}
+
 function methodNotAllowed(res: JsonResponse, allowed: string): void {
   sendJson(res, 405, { error: `method not allowed; use ${allowed}` })
 }
@@ -134,8 +217,9 @@ function guard(handler: (req: JsonRequest, res: JsonResponse) => Promise<void> |
   }
 }
 
-export function createMuyuRouteHandlers(muyu: MuyuService) {
+export function createMuyuRouteHandlers(muyu: MuyuService, webServer?: any) {
   const state = guard(async (req, res) => {
+    if (!checkRequestOrigin(req, res, webServer)) return
     if ((req.method || 'GET').toUpperCase() !== 'GET') {
       methodNotAllowed(res, 'GET')
       return
@@ -146,10 +230,12 @@ export function createMuyuRouteHandlers(muyu: MuyuService) {
   })
 
   const knock = guard(async (req, res) => {
+    if (!checkRequestOrigin(req, res, webServer)) return
     if ((req.method || '').toUpperCase() !== 'POST') {
       methodNotAllowed(res, 'POST')
       return
     }
+    if (!requireJsonContentType(req, res)) return
     const body = await readJsonBody(req)
     const count = clampInteger(body?.count, 1, 1, 108)
     const result = muyu.knock(count)
@@ -165,16 +251,23 @@ export function createMuyuRouteHandlers(muyu: MuyuService) {
   })
 
   const auto = guard(async (req, res) => {
+    if (!checkRequestOrigin(req, res, webServer)) return
     if ((req.method || '').toUpperCase() !== 'POST') {
       methodNotAllowed(res, 'POST')
       return
     }
+    if (!requireJsonContentType(req, res)) return
     const body = await readJsonBody(req)
     const action = String(body?.action || 'status')
+    if (action.length > MAX_ACTION_CHARS) {
+      sendJson(res, 400, { error: 'action is too long' })
+      return
+    }
     if (action === 'start') {
       const targetCount = clampInteger(body?.targetCount, 0, 0, 1080)
       const intervalMs = body?.intervalMs === undefined ? undefined : clampInteger(body.intervalMs, 1200, 200, 60000)
-      muyu.startAutoKnock(targetCount, intervalMs, typeof body?.cycleTitle === 'string' ? body.cycleTitle : undefined)
+      const title = typeof body?.cycleTitle === 'string' ? body.cycleTitle.slice(0, MAX_CYCLE_TITLE) : undefined
+      muyu.startAutoKnock(targetCount, intervalMs, title)
     } else if (action === 'stop') {
       muyu.stopAutoKnock()
     } else if (action !== 'status') {
@@ -185,12 +278,18 @@ export function createMuyuRouteHandlers(muyu: MuyuService) {
   })
 
   const sutra = guard(async (req, res) => {
+    if (!checkRequestOrigin(req, res, webServer)) return
     if ((req.method || '').toUpperCase() !== 'POST') {
       methodNotAllowed(res, 'POST')
       return
     }
+    if (!requireJsonContentType(req, res)) return
     const body = await readJsonBody(req)
     const bookId = typeof body?.bookId === 'string' ? body.bookId : ''
+    if (bookId.length > MAX_BOOK_ID) {
+      sendJson(res, 400, { error: 'bookId is too long' })
+      return
+    }
     if (!bookId || !muyu.selectSutra(bookId)) {
       sendJson(res, 400, { error: `unknown sutra: ${bookId || '(empty)'}` })
       return
@@ -209,7 +308,7 @@ export function registerMuyuClientApi(webServer: any, muyu: MuyuService): () => 
   if (!webServer || typeof webServer.register !== 'function') {
     return () => {}
   }
-  const handlers = createMuyuRouteHandlers(muyu)
+  const handlers = createMuyuRouteHandlers(muyu, webServer)
   const routes: Array<{ kind: 'exact'; path: string; handler: any }> = [
     { kind: 'exact', path: `${MUYU_API_PREFIX}/state`, handler: handlers.state },
     { kind: 'exact', path: `${MUYU_API_PREFIX}/knock`, handler: handlers.knock },

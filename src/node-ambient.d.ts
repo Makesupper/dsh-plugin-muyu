@@ -3,9 +3,10 @@ declare module 'node:fs' {
   export function existsSync(path: string): boolean
   export function mkdirSync(path: string, options?: { recursive?: boolean }): string | undefined
   export function readFileSync(path: string, encoding: BufferEncoding): string
-  export function writeFileSync(path: string, data: string, encoding?: BufferEncoding): void
+  export function writeFileSync(path: string, data: string, options?: BufferEncoding | { encoding?: BufferEncoding; flag?: string }): void
   export function renameSync(oldPath: string, newPath: string): void
   export function unlinkSync(path: string): void
+  export function statSync(path: string): { mtimeMs: number; size: number }
   const fs: {
     existsSync: typeof existsSync
     mkdirSync: typeof mkdirSync
@@ -13,6 +14,7 @@ declare module 'node:fs' {
     writeFileSync: typeof writeFileSync
     renameSync: typeof renameSync
     unlinkSync: typeof unlinkSync
+    statSync: typeof statSync
   }
   export default fs
 }

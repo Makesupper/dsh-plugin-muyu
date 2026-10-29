@@ -23,6 +23,7 @@ const PREF_KEY = 'dsh_muyu_client_prefs'
 
 interface ClientPreferences {
   soundId: MuyuSoundType
+  soundEnabled: boolean
   voiceId: string
   voiceEnabled: boolean
   rate: number
@@ -71,6 +72,7 @@ function buildExports(_require?: any) {
 
       let prefs: ClientPreferences = {
         soundId: 'sandalwood',
+        soundEnabled: true,
         voiceId: '',
         voiceEnabled: true,
         rate: 0.72,
@@ -98,6 +100,7 @@ function buildExports(_require?: any) {
 
       const audioPlayer = new MuyuWebAudioPlayer(prefs.soundId)
       audioPlayer.volume = prefs.volume
+      audioPlayer.muted = !prefs.soundEnabled
 
       const speechSynth = new SutraSpeechSynthesizer({
         rate: prefs.rate,
@@ -290,6 +293,7 @@ function buildExports(_require?: any) {
         sutraList: allBooks,
         currentBookId: currentBook.id,
         initialVoiceEnabled: prefs.voiceEnabled,
+        initialSoundEnabled: prefs.soundEnabled,
         getMeritRecords: () => ({
           todayMerit: serverState?.todayMerit ?? 0,
           totalMerit: serverState?.totalMerit ?? 0,
@@ -336,6 +340,11 @@ function buildExports(_require?: any) {
           if (!enabled) {
             speechSynth.stop()
           }
+        },
+        onToggleSound: (enabled: boolean) => {
+          prefs.soundEnabled = enabled
+          audioPlayer.muted = !enabled
+          savePrefs()
         },
         onSelectSutra: (bookId: string) => {
           widgetOptions.currentBookId = bookId

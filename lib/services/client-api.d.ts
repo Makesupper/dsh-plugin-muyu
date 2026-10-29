@@ -37,7 +37,7 @@ type JsonResponse = {
     end(body?: string): unknown;
 };
 export declare function buildMuyuState(muyu: MuyuService, includeHistory?: boolean): MuyuClientState;
-export declare function createMuyuRouteHandlers(muyu: MuyuService): {
+export declare function createMuyuRouteHandlers(muyu: MuyuService, webServer?: any): {
     state: (req: JsonRequest, res: JsonResponse) => void;
     knock: (req: JsonRequest, res: JsonResponse) => void;
     auto: (req: JsonRequest, res: JsonResponse) => void;

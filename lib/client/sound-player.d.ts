@@ -16,6 +16,8 @@ export declare class MuyuWebAudioPlayer {
     private ctx;
     private currentSound;
     volume: number;
+    /** Independent from the sutra voice toggle: mute only the wooden-fish/percussion sound. */
+    muted: boolean;
     constructor(initialSound?: MuyuSoundType);
     private initContext;
     setSoundType(type: MuyuSoundType): void;

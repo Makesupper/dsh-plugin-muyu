@@ -6,6 +6,7 @@ export declare class MuyuService {
     config: MuyuConfig;
     private storage;
     private chantService;
+    private stateStorage;
     private currentSound;
     private autoKnockTimer;
     private autoStatus;
@@ -25,8 +26,11 @@ export declare class MuyuService {
     knock(amount?: number, tokens?: number): KnockResult;
     /**
      * Perform a batch of knocks with a SINGLE disk write while advancing the sutra `count` times.
+     * The ledger add is atomic across processes; the returned per-step merit values are derived
+     * from the post-write snapshot.
      */
     knockBatch(count: number, tokens?: number, pendingTokens?: number): KnockResult[];
+    private buildKnockResults;
     /**
      * Consume LLM tokens, accumulate remainder in persistent pendingTokens, and trigger up to 108 knocks per call
      * with a single disk write.
@@ -41,6 +45,7 @@ export declare class MuyuService {
     getSutra(): SutraBook;
     getAllSutras(): SutraBook[];
     selectSutra(bookId: string): boolean;
+    private persistState;
     getCurrentSentence(): SutraSentence;
     getLastChantedSentence(): SutraSentence | null;
     getChantSeq(): number;

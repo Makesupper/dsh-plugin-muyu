@@ -31,7 +31,14 @@ function cleanupTmpFiles(baseFile) {
   const baseName = path.basename(baseFile)
   if (!fs.existsSync(dir)) return
   for (const entry of fs.readdirSync(dir)) {
-    if (entry === baseName || entry.startsWith(`${baseName}.corrupt-`) || entry.startsWith(`${baseName}.tmp-`)) {
+    if (
+      entry === baseName ||
+      entry === `${baseName}.lock` ||
+      entry === `${baseName}.state.json` ||
+      entry.startsWith(`${baseName}.corrupt-`) ||
+      entry.startsWith(`${baseName}.tmp-`) ||
+      entry.startsWith(`${baseName}.state.json.tmp-`)
+    ) {
       try {
         fs.unlinkSync(path.join(dir, entry))
       } catch {}
@@ -60,12 +67,12 @@ function makeMockResponse() {
   }
 }
 
-function makeMockRequest(method, url, body) {
+function makeMockRequest(method, url, body, extraHeaders = {}) {
   const listeners = { data: [], end: [], error: [] }
   const req = {
     method,
     url,
-    headers: {},
+    headers: { host: '127.0.0.1:12345', ...extraHeaders },
     on(event, callback) {
       ;(listeners[event] ||= []).push(callback)
       return req
@@ -82,8 +89,9 @@ function makeMockRequest(method, url, body) {
   return req
 }
 
-async function invokeRoute(handler, method, url, body) {
-  const req = makeMockRequest(method, url, body)
+async function invokeRoute(handler, method, url, body, extraHeaders = {}) {
+  const headers = body !== undefined ? { 'content-type': 'application/json', ...extraHeaders } : { ...extraHeaders }
+  const req = makeMockRequest(method, url, body, headers)
   const res = makeMockResponse()
   await handler(req, res)
   await res.done
@@ -179,6 +187,52 @@ test('MeritStorage - 功德、Token 与 pendingTokens 跨实例持久化、旧�
     } else {
       process.env.DSH_HOME = prevDshHome
     }
+  } finally {
+    cleanupTmpFiles(tmpFile)
+  }
+})
+
+test('MeritStorage - 多实例同文件写入不互相覆盖', () => {
+  const tmpFile = makeUniqueTmpFile('merit_multi')
+  try {
+    const a = new MeritStorage(tmpFile)
+    const b = new MeritStorage(tmpFile)
+    const todayKey = a.todayKey
+
+    a.addMerit(10, 0)
+    b.addMerit(1, 0)
+    const disk = JSON.parse(fs.readFileSync(tmpFile, 'utf-8'))
+    assert.equal(disk.days[todayKey].merit, 11)
+    assert.equal(new MeritStorage(tmpFile).todayMerit, 11)
+
+    a.addTokens(1000)
+    b.addTokens(2000)
+    assert.equal(new MeritStorage(tmpFile).todayTokens, 3000)
+    assert.equal(new MeritStorage(tmpFile).totalMerit, 11)
+  } finally {
+    cleanupTmpFiles(tmpFile)
+  }
+})
+
+test('MuyuService - 两个宿主实例的 Token 缓冲池不会互相覆盖', () => {
+  const tmpFile = makeUniqueTmpFile('service_multi')
+  try {
+    const fakeCtx = {
+      provide: () => {},
+      effect: fn => fn(),
+      tools: { register: () => () => {} }
+    }
+    const a = new MuyuService(fakeCtx, { storagePath: tmpFile, tokensPerMerit: 10000 })
+    const b = new MuyuService(fakeCtx, { storagePath: tmpFile, tokensPerMerit: 10000 })
+
+    const first = a.consumeTokens(4000)
+    assert.equal(first.pendingTokens, 4000)
+    // b was constructed before a wrote; it must still see a's pending under the lock.
+    const second = b.consumeTokens(8000)
+    assert.equal(second.knocksTriggered, 1)
+    assert.equal(second.pendingTokens, 2000)
+    assert.equal(a.getMeritStats().todayMerit, 1)
+    assert.equal(a.getPendingTokens(), 2000)
   } finally {
     cleanupTmpFiles(tmpFile)
   }
@@ -351,7 +405,7 @@ test('MuyuService & DSH Tools - 修持流程、session/event 真实钩子与非�
   }
 })
 
-test('Token 驱动敲木鱼 - 跨重启持久化、100万Token单次封顶108敲与单次写盘', async () => {
+test('Token 驱动敲木鱼 - 跨重启持久化、大额 Token 单次封顶与 pending 截断', async () => {
   const tmpFile = makeUniqueTmpFile('token_engine')
   try {
     const fakeCtx = {
@@ -400,13 +454,78 @@ test('Token 驱动敲木鱼 - 跨重启持久化、100万Token单次封顶108敲
     assert.equal(badRes.pendingTokens, 2000)
     assert.equal(badRes.todayTokens, 12000)
 
-    // 4. 一次性喂入 2,000,000 Tokens（理论 200 敲），单次调用封顶触发 108 敲，剩余留在 pendingTokens
+    // 4. 一次性喂入 2,000,000 Tokens：单次最多接受 1,080,000 Tokens（108 敲），
+    // 超出部分丢弃，pending 保持在阈值以内，不会留下几十万次才能消化的积压。
     const burstRes = muyu2.consumeTokens(2000000)
     assert.equal(burstRes.knocksTriggered, 108)
     assert.equal(burstRes.meritGained, 108)
     assert.equal(burstRes.todayMerit, 109)
-    assert.equal(burstRes.todayTokens, 2012000)
-    assert.equal(burstRes.pendingTokens, 2000000 + 2000 - 108 * 10000) // 922,000
+    assert.equal(burstRes.todayTokens, 1092000)
+    assert.equal(burstRes.pendingTokens, 2000)
+    assert.equal(burstRes.truncatedTokens, 920000)
+
+    // 5. 1e12 级别的恶意/误调用也只产生 108 敲和不足一个 step 的 pending
+    const hugeRes = muyu2.consumeTokens(1e12)
+    assert.equal(hugeRes.knocksTriggered, 108)
+    assert.ok(hugeRes.pendingTokens < 10000)
+    assert.ok(hugeRes.truncatedTokens > 0)
+    assert.ok(hugeRes.todayTokens < 3000000)
+    const nextRes = muyu2.consumeTokens(150000)
+    assert.equal(nextRes.knocksTriggered, 15) // 只按 150k 正常折算，不再连续 108 敲
+    assert.ok(nextRes.pendingTokens < 10000)
+
+    // 6. 模型可见的 muyu_feed_tokens 同样受单次上限保护
+    const hugeFeed = await feedTool.execute({ tokens: 1e12 })
+    assert.equal(hugeFeed.knocksTriggered, 108)
+    assert.ok(hugeFeed.pendingTokens < 10000)
+    assert.ok(hugeFeed.truncatedTokens > 0)
+    assert.ok(hugeFeed.todayTokens < 5000000)
+  } finally {
+    cleanupTmpFiles(tmpFile)
+  }
+})
+
+test('运行状态 - 经文句序与音色跨重启恢复', () => {
+  const tmpFile = makeUniqueTmpFile('runtime_state')
+  try {
+    const fakeCtx = {
+      provide: () => {},
+      effect: fn => fn(),
+      tools: { register: () => () => {} }
+    }
+    const service1 = new MuyuService(fakeCtx, {
+      storagePath: tmpFile,
+      defaultSutra: 'heart_sutra',
+      defaultSound: 'sandalwood',
+      tokensPerMerit: 10000
+    })
+    service1.knock(1)
+    service1.knock(1)
+    service1.selectSutra('vajra_sutra')
+    service1.knock(1)
+    service1.knock(1)
+    service1.setSoundType('bell')
+
+    const service2 = new MuyuService(fakeCtx, {
+      storagePath: tmpFile,
+      defaultSutra: 'heart_sutra',
+      defaultSound: 'sandalwood',
+      tokensPerMerit: 10000
+    })
+    assert.equal(service2.getSutra().id, 'vajra_sutra')
+    assert.equal(service2.getCurrentSentence().id, 2)
+    assert.equal(service2.getSoundType(), 'bell')
+
+    // 损坏的 state 文件不应阻止服务启动，回落到默认经文/音色
+    fs.writeFileSync(`${tmpFile}.state.json`, '{broken', 'utf-8')
+    const service3 = new MuyuService(fakeCtx, {
+      storagePath: tmpFile,
+      defaultSutra: 'heart_sutra',
+      defaultSound: 'sandalwood',
+      tokensPerMerit: 10000
+    })
+    assert.equal(service3.getSutra().id, 'heart_sutra')
+    assert.equal(service3.getSoundType(), 'sandalwood')
   } finally {
     cleanupTmpFiles(tmpFile)
   }
@@ -425,7 +544,13 @@ test('Client API - 前端与服务端工具共用同一本账，并驱动挂件�
       tokensPerMerit: 10000,
       tokenKnockEnabled: true
     })
-    const handlers = createMuyuRouteHandlers(muyu)
+    const webServer = {
+      getOrigin: () => 'http://127.0.0.1:12345',
+      register() {
+        return () => {}
+      }
+    }
+    const handlers = createMuyuRouteHandlers(muyu, webServer)
 
     // 1. 初始状态：同一账本、当前经文、令牌换算阈值
     const initial = await invokeRoute(handlers.state, 'GET', '/dsh-muyu/state')
@@ -436,6 +561,53 @@ test('Client API - 前端与服务端工具共用同一本账，并驱动挂件�
     assert.equal(initial.json.bookId, 'heart_sutra')
     assert.equal(initial.json.currentSentence.bookId, 'heart_sutra')
     assert.equal('records' in initial.json, false)
+
+    // 1b. 来源/主机/Content-Type 防护：跨站与 text/plain 一律拒绝
+    const validOrigin = await invokeRoute(handlers.state, 'GET', '/dsh-muyu/state', undefined, {
+      origin: 'http://127.0.0.1:12345'
+    })
+    assert.equal(validOrigin.status, 200)
+    const evilOrigin = await invokeRoute(handlers.state, 'GET', '/dsh-muyu/state', undefined, {
+      origin: 'http://evil.example'
+    })
+    assert.equal(evilOrigin.status, 403)
+    const evilHost = await invokeRoute(handlers.state, 'GET', '/dsh-muyu/state', undefined, {
+      host: 'evil.example:12345'
+    })
+    assert.equal(evilHost.status, 403)
+    const wrongContentType = await invokeRoute(
+      handlers.knock,
+      'POST',
+      '/dsh-muyu/knock',
+      JSON.stringify({ count: 1 }),
+      { 'content-type': 'text/plain' }
+    )
+    assert.equal(wrongContentType.status, 415)
+    const evilPost = await invokeRoute(
+      handlers.knock,
+      'POST',
+      '/dsh-muyu/knock',
+      JSON.stringify({ count: 1 }),
+      { origin: 'http://evil.example' }
+    )
+    assert.equal(evilPost.status, 403)
+    assert.equal(muyu.getMeritStats().todayMerit, 0)
+    const longTitle = await invokeRoute(
+      handlers.auto,
+      'POST',
+      '/dsh-muyu/auto',
+      JSON.stringify({ action: 'start', cycleTitle: 'x'.repeat(4000) })
+    )
+    assert.equal(longTitle.status, 200)
+    assert.equal(longTitle.json.state.auto.cycleTitle.length, 80)
+    await invokeRoute(handlers.auto, 'POST', '/dsh-muyu/auto', JSON.stringify({ action: 'stop' }))
+    const longBookId = await invokeRoute(
+      handlers.sutra,
+      'POST',
+      '/dsh-muyu/sutra',
+      JSON.stringify({ bookId: 'x'.repeat(100) })
+    )
+    assert.equal(longBookId.status, 400)
 
     // 2. 仅在显式请求历史时返回按日明细
     const withHistory = await invokeRoute(handlers.state, 'GET', '/dsh-muyu/state?history=1')
@@ -488,7 +660,8 @@ test('Client API - 前端与服务端工具共用同一本账，并驱动挂件�
 
     // 8. 注册函数只挂 4 条精确路由，并能在卸载时全部撤销
     const routes = []
-    const webServer = {
+    const routeWebServer = {
+      getOrigin: () => 'http://127.0.0.1:12345',
       register(route) {
         routes.push(route)
         return () => {
@@ -497,7 +670,7 @@ test('Client API - 前端与服务端工具共用同一本账，并驱动挂件�
         }
       }
     }
-    const dispose = registerMuyuClientApi(webServer, muyu)
+    const dispose = registerMuyuClientApi(routeWebServer, muyu)
     assert.deepEqual(
       routes.map(route => route.path),
       ['/dsh-muyu/state', '/dsh-muyu/knock', '/dsh-muyu/auto', '/dsh-muyu/sutra']
@@ -578,11 +751,19 @@ test('客户端挂件轮询服务端账本并触发 Token 功德动画', async (
       children: [],
       style: {},
       dataset: {},
+      _listeners: {},
       classList: { add() {}, remove() {}, toggle() {}, contains() { return false } },
       appendChild(child) { this.children.push(child); return child },
       replaceChildren() { this.children.length = 0 },
-      addEventListener() {},
+      addEventListener(type, callback) {
+        ;(this._listeners[type] ||= []).push(callback)
+      },
       removeEventListener() {},
+      click() {
+        for (const callback of this._listeners.click || []) {
+          callback({ stopPropagation() {}, preventDefault() {} })
+        }
+      },
       setAttribute() {},
       getAttribute() { return null },
       getBoundingClientRect() { return { left: 0, top: 0, width: 120, height: 120, right: 120, bottom: 120 } },
@@ -707,6 +888,16 @@ test('客户端挂件轮询服务端账本并触发 Token 功德动画', async (
   assert.ok(tokenBar.textContent.includes('12k Tokens'), tokenBar.textContent)
   assert.ok(tokenBar.textContent.includes('功德: 1'), tokenBar.textContent)
   assert.ok(sparks.some(el => el.textContent.includes('Tokens')), 'Token merit should trigger a knock effect')
+
+  const soundBtn = created.find(el => typeof el.className === 'string' && el.className.includes('dsh-muyu-sound-pill'))
+  assert.ok(soundBtn, 'wooden-fish sound toggle should be rendered')
+  assert.equal(soundBtn.textContent, '🔔')
+  soundBtn.click()
+  assert.equal(soundBtn.textContent, '🔕')
+  assert.equal(JSON.parse(localStorageStub.getItem('dsh_muyu_client_prefs') || '{}').soundEnabled, false)
+  soundBtn.click()
+  assert.equal(soundBtn.textContent, '🔔')
+  assert.equal(JSON.parse(localStorageStub.getItem('dsh_muyu_client_prefs') || '{}').soundEnabled, true)
 
   for (const cleanup of cleanups) cleanup()
 })

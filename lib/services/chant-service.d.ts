@@ -7,6 +7,8 @@ export declare class ChantService {
     getBook(): SutraBook;
     getAllBooks(): SutraBook[];
     setBook(bookId: string): boolean;
+    getSentenceIndex(): number;
+    restore(bookId: string, sentenceIndex: number): boolean;
     getCurrentSentence(): SutraSentence;
     advanceSentence(): {
         current: SutraSentence;

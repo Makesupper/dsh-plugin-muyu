@@ -17,16 +17,18 @@
    - Token 显示采用紧凑单位：不足 1M 用 `k`，达到 1M 用 `M`（例如 `12k`、`1.2M`、`29.6M`）。
 2. **传世经文经典宝库（客户端与服务端共享唯一权威源）**：
    - 内置《般若波罗蜜多心经》（玄奘译本 14 句）、《金刚般若波罗蜜经》、《大悲心陀罗尼神咒》、《六字真言与禅林名偈》、《药师灌顶真言》、《准提神咒》、《往生咒》、《楞严咒心赞偈》。
-3. **三种木鱼与古刹清磬音色**：
+3. **三种木鱼与古刹清磬音色 + 独立静音**：
    - `sandalwood`：紫檀沉音（浑厚沉稳，声如古庙老木，定心凝神）
    - `whitewood`：清脆白木（轻盈通透，高频脆爽，提神醒脑）
    - `bell`：古刹清磬（悠扬致远，梵音泛音列谐振，余音绕梁）
+   - 顶部 `🔔 / 🔕` 可独立静音木鱼敲击音效（不影响诵经语音）；工具栏 `🔊 诵经 / 🔇 诵经` 单独控制语音，两者互不干扰。
 4. **跨平台自然诵经语音（粤语女声优先）**：
    - 自动识别系统粤语女声（`zh-HK` / `yue` / Sinji）或普通话女声，动态跟随所选发音人的真实语种标签（`voice.lang`）。
 5. **原子化功德簿持久化**：
    - 按路径优先级 `显式 storagePath > $DSH_HOME/muyu-data/merit_history.json > ~/.dsh/muyu-data/merit_history.json` 存储。
    - 采用 `*.tmp` + `renameSync` 原子写盘；若遇到意外损坏的 JSON 文件，自动隔离备份为 `.corrupt-<timestamp>`，保障历史数据安全。
-   - *单宿主说明*：服务端账本假设单活跃 DSH 宿主进程运行，多进程并发写采用后写覆盖（Last-Write-Wins）。
+   - 每次写账本前先获取 `<merit_history.json>.lock` 独占锁，再重读磁盘账本、只应用本次增量并原子回写；桌面端与 `dsh web` 同时运行也不会互相覆盖（锁超时/陈旧锁有兜底）。
+   - 当前经文、句序与音色持久化到 `<merit_history.json>.state.json`，宿主重启后自动恢复。
 
 ---
 
@@ -36,6 +38,7 @@
 - `session/event` 自动计量的 Token 功德、`muyu_knock` / `muyu_auto_knock` / `muyu_feed_tokens` 工具产生的功德，以及悬浮挂件的手敲/自动修持，全部写入同一份账本，可通过 `muyu_get_merit` 查询。
 - 挂件启动时读取 `GET /dsh-muyu/state`，之后每 800ms 轮询一次；发现功德增长就触发敲击动画、音效与诵经。手敲、自动修持、切换经文分别 POST 到 `/dsh-muyu/knock`、`/dsh-muyu/auto`、`/dsh-muyu/sutra`，由服务端统一写入。
 - 旧版浏览器 `localStorage['dsh_muyu_client_merit']` 会在挂件加载时自动清除，历史本机功德不再参与展示。
+- `muyu_feed_tokens` 单次最多接受 `108 × tokensPerMerit` Tokens（默认 1,080,000），超出部分直接忽略，避免留下需要几十万次调用才能消化的 `pendingTokens` 积压。
 
 ### 挂件使用的 Host API
 
@@ -46,7 +49,11 @@
 | `/dsh-muyu/auto` | `POST` | 开始/停止/查询服务端自动修持（`{ action: 'start' \| 'stop' \| 'status' }`） |
 | `/dsh-muyu/sutra` | `POST` | 切换服务端当前经文（`{ bookId }`） |
 
-这些路由由 `dsh-host-webserver` 挂在 loopback 的同一 Web 服务上，仅供页面内的挂件调用；修改 Host 端路由后需要重启 DSH 宿主，前端 bundle 可通过页面刷新/HMR 重新加载。
+这些路由由 `dsh-host-webserver` 挂在 loopback 的同一 Web 服务上，仅供页面内的挂件调用：
+- `POST` 必须使用 `content-type: application/json`，否则返回 415；跨域 `text/plain` 简单请求会被直接拒绝。
+- 所有路由校验 `Host` 与 `Origin`：只允许本机 Web 源、`dsh-app://app` 或同端口 loopback 源；其他来源返回 403。
+- 请求体上限 8 KiB；`cycleTitle` 最长 80 字符，`bookId` 最长 64 字符。
+- 修改 Host 端路由后需要重启 DSH 宿主，前端 bundle 可通过页面刷新/HMR 重新加载。
 
 ### 配置项矩阵 (`cordis.patch.yml`)
 
@@ -75,7 +82,7 @@
 | `muyu_get_merit` | 查看服务端今日功德、历劫总功德、今日/历劫度化 Token、蓄力余数 `pendingTokens` 及按日明细 |
 | `muyu_select_sutra` | 浏览 8 部经典目录摘要或切换当前诵读修持的经典经咒 |
 | `muyu_play_sound` | 获取或切换紫檀沉音、清脆白木、古刹清磬音色 |
-| `muyu_feed_tokens` | 外部或手动补记 Token 消耗量（日常对话已由 `session/event` 自动计量，无需重复调用） |
+| `muyu_feed_tokens` | 外部或手动补记 Token 消耗量（日常对话已由 `session/event` 自动计量）；单次最多 `108 × tokensPerMerit` Tokens，超出忽略 |
 
 ---
 

@@ -208,6 +208,7 @@ export declare function createMuyuTools(muyu: MuyuService): ({
     };
     execute(args: any): Promise<{
         tokensConsumed: number;
+        truncatedTokens?: number;
         pendingTokens: number;
         knocksTriggered: number;
         meritGained: number;

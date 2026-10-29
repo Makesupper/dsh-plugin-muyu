@@ -36,6 +36,8 @@ export class MuyuWebAudioPlayer {
   private ctx: AudioContext | null = null
   private currentSound: MuyuSoundType = 'sandalwood'
   public volume: number = 1.0
+  /** Independent from the sutra voice toggle: mute only the wooden-fish/percussion sound. */
+  public muted: boolean = false
 
   constructor(initialSound: MuyuSoundType = 'sandalwood') {
     this.currentSound = initialSound
@@ -71,6 +73,7 @@ export class MuyuWebAudioPlayer {
    * Synthesize real physical wooden fish or temple bell percussion using Web Audio oscillators & filters
    */
   public playWoodenSound(overrideType?: MuyuSoundType) {
+    if (this.muted) return
     this.initContext()
     if (!this.ctx) return
 

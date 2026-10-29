@@ -38,6 +38,7 @@ export interface WidgetOptions {
   onKnock?: () => void
   onToggleAuto?: () => void
   onToggleVoice?: (enabled: boolean) => void
+  onToggleSound?: (enabled: boolean) => void
   onSelectSutra?: (bookId: string) => void
   onSelectVoice?: (voiceId: string) => void
   onSelectSound?: (soundId: MuyuSoundType) => void
@@ -49,6 +50,7 @@ export interface WidgetOptions {
   sutraList: SutraItem[]
   currentBookId: string
   initialVoiceEnabled?: boolean
+  initialSoundEnabled?: boolean
   getMeritRecords: () => {
     todayMerit: number
     totalMerit: number
@@ -81,6 +83,7 @@ export function createMuyuFloatingPet(options: WidgetOptions) {
 
   let isCollapsed = false
   let voiceEnabled = options.initialVoiceEnabled ?? true
+  let soundEnabled = options.initialSoundEnabled ?? true
   let currentSettingsTab: 'sutra' | 'sound' | 'voice' = 'sutra'
   const sparkTimers = new Set<ReturnType<typeof setTimeout>>()
 
@@ -496,6 +499,15 @@ export function createMuyuFloatingPet(options: WidgetOptions) {
   toggleBtn.textContent = '收起'
   topBar.appendChild(toggleBtn)
 
+  const soundBtn = document.createElement('button')
+  soundBtn.type = 'button'
+  soundBtn.className = 'dsh-muyu-collapse-pill dsh-muyu-sound-pill'
+  soundBtn.setAttribute('aria-label', '切换木鱼敲击音效开关')
+  soundBtn.title = soundEnabled ? '木鱼音效：开' : '木鱼音效：静音'
+  soundBtn.setAttribute('aria-pressed', String(soundEnabled))
+  soundBtn.textContent = soundEnabled ? '🔔' : '🔕'
+  topBar.appendChild(soundBtn)
+
   headerAnchor.appendChild(topBar)
 
   const speechBubble = document.createElement('div')
@@ -551,7 +563,7 @@ export function createMuyuFloatingPet(options: WidgetOptions) {
   voiceBtn.type = 'button'
   voiceBtn.className = `dsh-muyu-btn ${voiceEnabled ? 'is-active' : ''}`
   voiceBtn.setAttribute('aria-label', '切换诵经语音开关')
-  voiceBtn.textContent = voiceEnabled ? '🔊 诵经' : '🔇 静音'
+  voiceBtn.textContent = voiceEnabled ? '🔊 诵经' : '🔇 诵经'
   toolbar.appendChild(voiceBtn)
 
   const settingsBtn = document.createElement('button')
@@ -717,14 +729,26 @@ export function createMuyuFloatingPet(options: WidgetOptions) {
     }
   })
 
-  // Voice Toggle
+  // Voice Toggle (sutra speech only; independent from the wooden-fish sound)
   voiceBtn.addEventListener('click', (e) => {
     e.stopPropagation()
     voiceEnabled = !voiceEnabled
-    voiceBtn.textContent = voiceEnabled ? '🔊 诵经' : '🔇 静音'
+    voiceBtn.textContent = voiceEnabled ? '🔊 诵经' : '🔇 诵经'
     voiceBtn.className = `dsh-muyu-btn ${voiceEnabled ? 'is-active' : ''}`
     if (options.onToggleVoice) {
       options.onToggleVoice(voiceEnabled)
+    }
+  })
+
+  // Wooden-fish sound toggle
+  soundBtn.addEventListener('click', (e) => {
+    e.stopPropagation()
+    soundEnabled = !soundEnabled
+    soundBtn.textContent = soundEnabled ? '🔔' : '🔕'
+    soundBtn.title = soundEnabled ? '木鱼音效：开' : '木鱼音效：静音'
+    soundBtn.setAttribute('aria-pressed', String(soundEnabled))
+    if (options.onToggleSound) {
+      options.onToggleSound(soundEnabled)
     }
   })
 

@@ -277,7 +277,7 @@ export function createMuyuTools(muyu: MuyuService) {
 
   const muyuFeedTokens = {
     name: 'muyu_feed_tokens',
-    description: '外部或手动补记 Token 消耗量（注：DSH 会话消息已通过 session/event 自动计量，通常无需模型主动调用，仅用于外部离线补记）。按配置的 tokensPerMerit（默认 10000）自动折算敲击与功德（单次上限 108 敲）。',
+    description: '外部或手动补记 Token 消耗量（注：DSH 会话消息已通过 session/event 自动计量，通常无需模型主动调用，仅用于外部离线补记）。按配置的 tokensPerMerit（默认 10000）自动折算敲击与功德；单次最多 108 敲，超出部分忽略且不会留下 pending 积压。',
     parameters: {
       type: 'object',
       properties: {
@@ -293,6 +293,9 @@ export function createMuyuTools(muyu: MuyuService) {
       render: (_args: any, res: any) => {
         const step = res.tokensPerMerit ?? 10000
         let text = `⚡ 补记消耗 ${formatTokenCount(res.tokensConsumed)} Tokens（兑换阈值：${step} Tokens/功德）！\n`
+        if (res.truncatedTokens && res.truncatedTokens > 0) {
+          text += `⚠️ 单次最多处理 ${formatTokenCount(step * 108)} Tokens，已忽略 ${formatTokenCount(res.truncatedTokens)} Tokens，避免缓冲池积压。\n`
+        }
         if (res.knocksTriggered > 0) {
           text += `🪷 功德 +${res.meritGained}（触发木鱼敲击 ${res.knocksTriggered} 次）！\n`
           const last = res.knockResults[res.knockResults.length - 1]

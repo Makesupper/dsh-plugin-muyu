@@ -31,6 +31,7 @@ export interface WidgetOptions {
     onKnock?: () => void;
     onToggleAuto?: () => void;
     onToggleVoice?: (enabled: boolean) => void;
+    onToggleSound?: (enabled: boolean) => void;
     onSelectSutra?: (bookId: string) => void;
     onSelectVoice?: (voiceId: string) => void;
     onSelectSound?: (soundId: MuyuSoundType) => void;
@@ -42,6 +43,7 @@ export interface WidgetOptions {
     sutraList: SutraItem[];
     currentBookId: string;
     initialVoiceEnabled?: boolean;
+    initialSoundEnabled?: boolean;
     getMeritRecords: () => {
         todayMerit: number;
         totalMerit: number;
