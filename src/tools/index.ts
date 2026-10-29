@@ -1,5 +1,6 @@
 import type { MuyuService } from '../services/muyu-service.js'
 import { soundLibrary } from '../data/sounds.js'
+import { formatTokenCount } from '../format.js'
 import type { MuyuSoundType } from '../types.js'
 
 const VALID_CYCLES = new Set([0, 9, 21, 49, 108, 1080])
@@ -155,13 +156,13 @@ export function createMuyuTools(muyu: MuyuService) {
       schema: { type: 'object' },
       render: (_args: any, res: any) => {
         let text = `📿 【服务端功德簿总览】\n`
-        text += `• 今日修行功德：${res.todayMerit} (今日共度 ${res.todayTokens ?? 0} Tokens)\n`
-        text += `• 历劫累积功德：${res.totalMerit} (历劫共度 ${res.totalTokens ?? 0} Tokens)\n`
+        text += `• 今日修行功德：${res.todayMerit} (今日共度 ${formatTokenCount(res.todayTokens)} Tokens)\n`
+        text += `• 历劫累积功德：${res.totalMerit} (历劫共度 ${formatTokenCount(res.totalTokens)} Tokens)\n`
         text += `• 缓冲池蓄力余数：${res.pendingTokens ?? 0} Tokens\n\n`
         text += `📅 【近期修行记录】\n`
         if (res.records && res.records.length > 0) {
           for (const item of res.records.slice(0, 7)) {
-            const tokInfo = item.tokens ? ` (消耗 ${item.tokens} Tokens)` : ''
+            const tokInfo = item.tokens ? ` (消耗 ${formatTokenCount(item.tokens)} Tokens)` : ''
             text += `  - ${item.displayDate} (${item.dateKey})：积攒 ${item.count} 功德${tokInfo}\n`
           }
         } else {
@@ -291,7 +292,7 @@ export function createMuyuTools(muyu: MuyuService) {
       schema: { type: 'object' },
       render: (_args: any, res: any) => {
         const step = res.tokensPerMerit ?? 10000
-        let text = `⚡ 补记消耗 ${res.tokensConsumed} Tokens（兑换阈值：${step} Tokens/功德）！\n`
+        let text = `⚡ 补记消耗 ${formatTokenCount(res.tokensConsumed)} Tokens（兑换阈值：${step} Tokens/功德）！\n`
         if (res.knocksTriggered > 0) {
           text += `🪷 功德 +${res.meritGained}（触发木鱼敲击 ${res.knocksTriggered} 次）！\n`
           const last = res.knockResults[res.knockResults.length - 1]
@@ -301,7 +302,7 @@ export function createMuyuTools(muyu: MuyuService) {
         } else {
           text += `🪵 功德蓄力中：当前缓冲池已积攒 ${res.pendingTokens} / ${step} Tokens，静待下次敲击！\n`
         }
-        text += `【今日修行】今日 Token: ${res.todayTokens} | 今日功德: ${res.todayMerit} (历劫: ${res.totalMerit})`
+        text += `【今日修行】今日 Token: ${formatTokenCount(res.todayTokens)} | 今日功德: ${res.todayMerit} (历劫: ${res.totalMerit})`
         return [{ type: 'text', text }]
       }
     },

@@ -104,6 +104,7 @@ function buildClientBundle() {
   // Use the already-transpiled lib/ files (from tsc or fallback) in deterministic dependency order
   // so the output is 100% identical regardless of whether esbuild is installed.
   const orderedLibModules = [
+    path.join(LIB_DIR, 'format.js'),
     path.join(LIB_DIR, 'data/sutras.js'),
     path.join(LIB_DIR, 'client/muyu-texture-b64.js'),
     path.join(LIB_DIR, 'client/sound-player.js'),

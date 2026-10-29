@@ -12,6 +12,9 @@
    - 服务端监听 DSH 原生 `session/event` 中的 `assistant/message` 消息 `usage`（自动汇总 `inputTokens + outputTokens + cacheReadTokens + cacheWriteTokens`，忽略 `assistant/attempt` 重试以免重复记账）。
    - 默认每累计消耗 `10,000 Tokens` 自动敲响木鱼 1 次、功德 `+1`；未满阈值的余数持久化保存在 `pendingTokens` 缓冲池中，跨宿主重启不丢失。
    - 单次大额 Token 突增采用批量单次原子写盘（`knockBatch`），单次封顶触发 `108` 敲，杜绝事件循环阻塞。
+   - 前端挂件轮询同一份服务端账本：Token 度化会实时触发木鱼敲击动画、音效与功德累积，不再依赖客户端本地记账。
+   - 点击木鱼时，经文气泡会在当前句诵完后才推进到下一句，不会在点击瞬间跳句。
+   - Token 显示采用紧凑单位：不足 1M 用 `k`，达到 1M 用 `M`（例如 `12k`、`1.2M`、`29.6M`）。
 2. **传世经文经典宝库（客户端与服务端共享唯一权威源）**：
    - 内置《般若波罗蜜多心经》（玄奘译本 14 句）、《金刚般若波罗蜜经》、《大悲心陀罗尼神咒》、《六字真言与禅林名偈》、《药师灌顶真言》、《准提神咒》、《往生咒》、《楞严咒心赞偈》。
 3. **三种木鱼与古刹清磬音色**：
@@ -27,27 +30,39 @@
 
 ---
 
-## 📊 账本与配置作用域说明
+## 📊 单一账本与配置说明
 
-当前版本包含两套独立维护的修持计数：
-- **服务端工具账本**（`~/.dsh/muyu-data/merit_history.json`）：记录通过 `session/event` 自动计量的模型 Token 功德，以及调用 `muyu_knock` / `muyu_auto_knock` / `muyu_feed_tokens` 产生的功德，可通过 `muyu_get_merit` 查询。
-- **客户端挂件本机账本**（浏览器 `localStorage['dsh_muyu_client_merit']`）：记录用户在悬浮木鱼挂件上手敲、挂件自动修持及前端连击的本机交互功德，在挂件“功德簿”弹窗中展示。
+当前版本只维护**一本服务端功德簿**（`~/.dsh/muyu-data/merit_history.json`），不存在客户端独立账本：
+- `session/event` 自动计量的 Token 功德、`muyu_knock` / `muyu_auto_knock` / `muyu_feed_tokens` 工具产生的功德，以及悬浮挂件的手敲/自动修持，全部写入同一份账本，可通过 `muyu_get_merit` 查询。
+- 挂件启动时读取 `GET /dsh-muyu/state`，之后每 800ms 轮询一次；发现功德增长就触发敲击动画、音效与诵经。手敲、自动修持、切换经文分别 POST 到 `/dsh-muyu/knock`、`/dsh-muyu/auto`、`/dsh-muyu/sutra`，由服务端统一写入。
+- 旧版浏览器 `localStorage['dsh_muyu_client_merit']` 会在挂件加载时自动清除，历史本机功德不再参与展示。
+
+### 挂件使用的 Host API
+
+| 路由 | 方法 | 说明 |
+|---|---|---|
+| `/dsh-muyu/state` | `GET` | 返回今日/累计功德、今日/累计 Token、`pendingTokens`、当前经文、`lastSentence`、`chantSeq`、自动修持状态；`?history=1` 时附带按日明细 |
+| `/dsh-muyu/knock` | `POST` | 手敲一次（`{ count }`，1~108），写入服务端账本并返回新状态 |
+| `/dsh-muyu/auto` | `POST` | 开始/停止/查询服务端自动修持（`{ action: 'start' \| 'stop' \| 'status' }`） |
+| `/dsh-muyu/sutra` | `POST` | 切换服务端当前经文（`{ bookId }`） |
+
+这些路由由 `dsh-host-webserver` 挂在 loopback 的同一 Web 服务上，仅供页面内的挂件调用；修改 Host 端路由后需要重启 DSH 宿主，前端 bundle 可通过页面刷新/HMR 重新加载。
 
 ### 配置项矩阵 (`cordis.patch.yml`)
 
 | 配置项 | 类型与默认值 | 作用域 | 说明 |
 |---|---|---|---|
-| `defaultSutra` | `string` (`'heart_sutra'`) | 服务端工具 | 服务端初始诵读经文 ID（挂件端在面板中选择并记忆到 `localStorage`） |
-| `defaultSound` | `'sandalwood' \| 'whitewood' \| 'bell'` | 服务端工具 | 服务端默认音色（挂件端可通过“音色”按钮实时切换合成音色） |
-| `autoKnockIntervalMs` | `number` (`1200`, 范围 `200~60000`) | 服务端工具 | `muyu_auto_knock` 默认敲击间隔毫秒数 |
-| `autoKnockMaxDurationMs` | `number` (`1800000`, 默认 30 分钟) | 服务端工具 | `muyu_auto_knock` 无尽修持单次最大持续时长，到时自动停止 |
-| `voiceEnabled` | `boolean` (`true`) | 服务端工具 | 服务端语音提示开关（挂件端通过工具栏“诵经: 开/静音”独立控制） |
-| `voiceRate` | `number` (`0.8`, 范围 `0.1~2.0`) | 服务端工具 | 服务端返回 `voicePrompt.rate` 语速参数 |
-| `voicePitch` | `number` (`0.95`, 范围 `0.1~2.0`) | 服务端工具 | 服务端返回 `voicePrompt.pitch` 音调参数 |
-| `volume` | `number` (`1.0`, 范围 `0.0~1.0`) | 服务端工具 | 服务端返回 `voicePrompt.volume` 音量参数 |
-| `storagePath` | `string` (可选，支持 `~`) | 服务端工具 | 自定义功德簿 JSON 存储路径 |
-| `tokenKnockEnabled` | `boolean` (`true`) | 服务端工具 | 是否开启按会话 Token 消耗自动敲木鱼攒功德 |
-| `tokensPerMerit` | `number` (`10000`) | 服务端工具 | 每积攒 1 点功德所需的 Token 消耗阈值 |
+| `defaultSutra` | `string` (`'heart_sutra'`) | 服务端 | 服务端初始诵读经文 ID（挂件切换经文也会写入服务端） |
+| `defaultSound` | `'sandalwood' \| 'whitewood' \| 'bell'` | 服务端 | 服务端默认音色（挂件端另有本地音色选择，用于浏览器播放） |
+| `autoKnockIntervalMs` | `number` (`1200`, 范围 `200~60000`) | 服务端 | 自动修持默认敲击间隔毫秒数 |
+| `autoKnockMaxDurationMs` | `number` (`1800000`, 默认 30 分钟) | 服务端 | 无尽修持单次最大持续时长，到时自动停止 |
+| `voiceEnabled` | `boolean` (`true`) | 服务端 | 服务端语音提示开关（挂件端另有本地“诵经: 开/静音”偏好） |
+| `voiceRate` | `number` (`0.8`, 范围 `0.1~2.0`) | 服务端 | 服务端返回 `voicePrompt.rate` 语速参数 |
+| `voicePitch` | `number` (`0.95`, 范围 `0.1~2.0`) | 服务端 | 服务端返回 `voicePrompt.pitch` 音调参数 |
+| `volume` | `number` (`1.0`, 范围 `0.0~1.0`) | 服务端 | 服务端返回 `voicePrompt.volume` 音量参数 |
+| `storagePath` | `string` (可选，支持 `~`) | 服务端 | 自定义功德簿 JSON 存储路径 |
+| `tokenKnockEnabled` | `boolean` (`true`) | 服务端 | 是否开启按会话 Token 消耗自动敲木鱼攒功德 |
+| `tokensPerMerit` | `number` (`10000`) | 服务端 | 每积攒 1 点功德所需的 Token 消耗阈值 |
 
 ---
 
@@ -80,3 +95,5 @@ npm test        # 自动执行 pretest 构建并运行全部单元测试
 ```sh
 pnpm dsh web --patch ./dsh-plugin-muyu/cordis.patch.yml
 ```
+
+> 更新 Host 端代码（`src/index.ts`、`src/services/*`）后需要重启 DSH 宿主，`/dsh-muyu/*` 路由才会注册；只改前端 bundle 时刷新页面/HMR 即可。

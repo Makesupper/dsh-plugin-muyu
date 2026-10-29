@@ -10,6 +10,7 @@ import type {
   AutoKnockStatus,
   MeritStats,
   SutraBook,
+  SutraSentence,
   TokenConsumeResult
 } from '../types.js'
 import type { MuyuConfig } from '../config.js'
@@ -45,10 +46,15 @@ export class MuyuService {
     cycleTitle: '无尽修持'
   }
   private assetsDir: string
+  /** Last sentence actually chanted by a knock, used by the widget to speak the right line. */
+  private lastChantedSentence: SutraSentence | null = null
+  /** Monotonic counter incremented once per knock, so the widget can detect new chants. */
+  private chantSeq: number = 0
 
   constructor(public ctx: Context, public config: MuyuConfig = {}) {
     this.storage = new MeritStorage(config.storagePath)
     this.chantService = new ChantService(config.defaultSutra)
+    this.lastChantedSentence = this.chantService.getCurrentSentence()
     if (config.defaultSound && soundLibrary[config.defaultSound]) {
       this.currentSound = config.defaultSound
     }
@@ -100,6 +106,8 @@ export class MuyuService {
       safeTokens
     )
     const { current, next, cycleCompleted, completedCycles } = this.chantService.advanceSentence()
+    this.lastChantedSentence = current
+    this.chantSeq += 1
     const soundFile = this.getSoundFile()
     const voice = this.getVoiceSettings()
 
@@ -153,6 +161,7 @@ export class MuyuService {
 
     for (let i = 0; i < safeCount; i++) {
       const { current, next, cycleCompleted, completedCycles } = this.chantService.advanceSentence()
+      this.lastChantedSentence = current
       const stepMeritOffset = i + 1
       results.push({
         amount: 1,
@@ -178,6 +187,7 @@ export class MuyuService {
       })
     }
 
+    this.chantSeq += safeCount
     return results
   }
 
@@ -333,10 +343,22 @@ export class MuyuService {
   }
 
   public selectSutra(bookId: string): boolean {
-    return this.chantService.setBook(bookId)
+    const changed = this.chantService.setBook(bookId)
+    if (changed) {
+      this.lastChantedSentence = this.chantService.getCurrentSentence()
+    }
+    return changed
   }
 
   public getCurrentSentence() {
     return this.chantService.getCurrentSentence()
+  }
+
+  public getLastChantedSentence(): SutraSentence | null {
+    return this.lastChantedSentence
+  }
+
+  public getChantSeq(): number {
+    return this.chantSeq
   }
 }

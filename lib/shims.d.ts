@@ -12,6 +12,8 @@ export interface Context {
     provide(name: string, value: any): void;
     effect(callback: () => void | (() => void)): () => void;
     on(event: string, listener: (...args: any[]) => any): () => void;
+    inject(names: string[], callback: (ctx: Context) => void): () => void;
+    get(name: string, strict?: boolean): any;
     set(key: string, value: any): void;
     tools: {
         register(tool: any): () => void;

@@ -8,6 +8,7 @@
  */
 
 import { MUYU_FISH_BASE64, MUYU_MALLET_BASE64 } from './muyu-texture-b64.js'
+import { formatTokenCount } from '../format.js'
 import type { MuyuSoundType } from '../types.js'
 import type { SoundPresetOption } from './sound-player.js'
 
@@ -40,6 +41,7 @@ export interface WidgetOptions {
   onSelectSutra?: (bookId: string) => void
   onSelectVoice?: (voiceId: string) => void
   onSelectSound?: (soundId: MuyuSoundType) => void
+  onOpenMerit?: () => void
   getVoiceList?: () => VoiceItem[]
   getCurrentVoiceId?: () => string
   getSoundPresets?: () => SoundPresetOption[]
@@ -244,20 +246,21 @@ export function createMuyuFloatingPet(options: WidgetOptions) {
 
     .dsh-muyu-mallet-img {
       position: absolute;
-      width: 76px;
-      height: 42px;
+      width: 64px;
+      height: 35px;
       object-fit: contain;
       pointer-events: none;
       display: none;
       z-index: 5;
-      transform-origin: 85% 50%;
-      transform: translate(-88%, -50%) rotate(38deg) scale(1);
+      /* Grip near the mallet head so the head follows the cursor/strike point. */
+      transform-origin: 70% 50%;
+      transform: translate(-70%, -50%) rotate(38deg) scale(1);
       transition: transform 0.08s cubic-bezier(0.22, 1, 0.36, 1);
       filter: drop-shadow(0 4px 8px rgba(0, 0, 0, 0.55));
     }
     .dsh-muyu-pet-root.is-collapsed .dsh-muyu-mallet-img {
-      width: 48px;
-      height: 27px;
+      width: 40px;
+      height: 22px;
     }
 
     .dsh-muyu-merit-badge {
@@ -524,6 +527,8 @@ export function createMuyuFloatingPet(options: WidgetOptions) {
   const meritBadge = document.createElement('div')
   meritBadge.className = 'dsh-muyu-merit-badge'
   meritBadge.textContent = '功德 0'
+  meritBadge.title = '点击查看服务端功德簿'
+  meritBadge.style.cursor = 'pointer'
   stage.appendChild(meritBadge)
 
   container.appendChild(stage)
@@ -559,7 +564,7 @@ export function createMuyuFloatingPet(options: WidgetOptions) {
   const meritBtn = document.createElement('button')
   meritBtn.type = 'button'
   meritBtn.className = 'dsh-muyu-btn'
-  meritBtn.setAttribute('aria-label', '查看本机挂件功德簿')
+  meritBtn.setAttribute('aria-label', '查看服务端功德簿')
   meritBtn.textContent = '📿 功德簿'
   toolbar.appendChild(meritBtn)
 
@@ -569,7 +574,7 @@ export function createMuyuFloatingPet(options: WidgetOptions) {
   const tokenBar = document.createElement('div')
   tokenBar.className = 'dsh-muyu-token-bar'
   tokenBar.title = '点击查看功德与 Token 详情'
-  tokenBar.textContent = '⚡ 挂件度化: 0 Tokens · 本机功德: 0'
+  tokenBar.textContent = '⚡ 度化: 0 Tokens · 功德: 0'
   dockCard.appendChild(tokenBar)
 
   container.appendChild(dockCard)
@@ -617,7 +622,10 @@ export function createMuyuFloatingPet(options: WidgetOptions) {
   })
 
   // Mallet Cursor Tracking & Knock Animation
-  stage.addEventListener('mouseenter', () => {
+  stage.addEventListener('mouseenter', (e) => {
+    const rect = stage.getBoundingClientRect()
+    malletImg.style.left = `${e.clientX - rect.left}px`
+    malletImg.style.top = `${e.clientY - rect.top}px`
     malletImg.style.display = 'block'
   })
   stage.addEventListener('mouseleave', () => {
@@ -632,12 +640,12 @@ export function createMuyuFloatingPet(options: WidgetOptions) {
   })
 
   function animateKnock() {
-    malletImg.style.transform = 'translate(-88%, -50%) rotate(-14deg) scale(0.93)'
+    malletImg.style.transform = 'translate(-70%, -42%) rotate(-14deg) scale(0.94)'
     fishImg.style.transform = 'scale(0.92)'
 
     const t = setTimeout(() => {
       sparkTimers.delete(t)
-      malletImg.style.transform = 'translate(-88%, -50%) rotate(38deg) scale(1)'
+      malletImg.style.transform = 'translate(-70%, -50%) rotate(38deg) scale(1)'
       fishImg.style.transform = 'scale(1)'
     }, 110)
     sparkTimers.add(t)
@@ -887,10 +895,11 @@ export function createMuyuFloatingPet(options: WidgetOptions) {
     openSettingsModal(currentSettingsTab)
   })
 
-  // Merit Record Sheet (本机挂件功德簿)
+  // Merit Record Sheet (服务端功德簿)
   const openMeritModal = (e: Event) => {
     e.stopPropagation()
-    modalTitle.textContent = '📿 本机挂件功德簿'
+    options.onOpenMerit?.()
+    modalTitle.textContent = '📿 服务端功德簿'
     modalTabs.style.display = 'none'
     modalBody.replaceChildren()
 
@@ -898,7 +907,7 @@ export function createMuyuFloatingPet(options: WidgetOptions) {
 
     const noteBanner = document.createElement('div')
     noteBanner.style.cssText = 'font-size: 10px; color: #c4a46e; margin-bottom: 10px; line-height: 1.4;'
-    noteBanner.textContent = '注：此处记录挂件本机交互功德（保存在浏览器 localStorage）；服务端工具账本请通过 muyu_get_merit 工具查询。'
+    noteBanner.textContent = '注：挂件与服务端工具共用同一份功德簿（~/.dsh/muyu-data/merit_history.json），与 muyu_get_merit 查询结果一致。'
     modalBody.appendChild(noteBanner)
 
     const summaryBox = document.createElement('div')
@@ -925,7 +934,7 @@ export function createMuyuFloatingPet(options: WidgetOptions) {
 
       const t = document.createElement('div')
       t.style.cssText = 'font-size: 9px; color: #c4a46e; margin-top: 2px;'
-      t.textContent = `⚡ ${tokenVal.toLocaleString()} Tokens`
+      t.textContent = `⚡ ${formatTokenCount(tokenVal)} Tokens`
 
       col.appendChild(l)
       col.appendChild(m)
@@ -936,9 +945,9 @@ export function createMuyuFloatingPet(options: WidgetOptions) {
     const divider = document.createElement('div')
     divider.style.cssText = 'width: 1px; background: rgba(212,163,89,0.3);'
 
-    summaryBox.appendChild(makeCol('今日挂件功德', `+${stats.todayMerit}`, stats.todayTokens ?? 0))
+    summaryBox.appendChild(makeCol('今日功德', `+${stats.todayMerit}`, stats.todayTokens ?? 0))
     summaryBox.appendChild(divider)
-    summaryBox.appendChild(makeCol('本机累计总功德', `${stats.totalMerit}`, stats.totalTokens ?? 0))
+    summaryBox.appendChild(makeCol('累计总功德', `${stats.totalMerit}`, stats.totalTokens ?? 0))
     modalBody.appendChild(summaryBox)
 
     const listTitle = document.createElement('div')
@@ -966,7 +975,7 @@ export function createMuyuFloatingPet(options: WidgetOptions) {
         if (rec.tokens && rec.tokens > 0) {
           const tokDiv = document.createElement('div')
           tokDiv.style.cssText = 'font-size: 10px; color: #c4a46e; margin-top: 2px;'
-          tokDiv.textContent = `⚡ 度化 ${rec.tokens.toLocaleString()} Tokens`
+          tokDiv.textContent = `⚡ 度化 ${formatTokenCount(rec.tokens)} Tokens`
           left.appendChild(tokDiv)
         }
 
@@ -990,6 +999,11 @@ export function createMuyuFloatingPet(options: WidgetOptions) {
 
   meritBtn.addEventListener('click', openMeritModal)
   tokenBar.addEventListener('click', openMeritModal)
+  // The merit badge sits inside the fish stage; stop the click from bubbling into a knock.
+  meritBadge.addEventListener('click', (e) => {
+    e.stopPropagation()
+    openMeritModal(e)
+  })
 
   // Expand / Collapse Toggle (Collapsed mode keeps mini sutra bubble + drag handle + mini fish)
   toggleBtn.addEventListener('click', (e) => {
@@ -1049,7 +1063,7 @@ export function createMuyuFloatingPet(options: WidgetOptions) {
         autoBtn.className = `dsh-muyu-btn ${isAutoRunning ? 'is-active' : ''}`
       }
       if (tokenStats) {
-        tokenBar.textContent = `⚡ 挂件度化: ${tokenStats.todayTokens.toLocaleString()} Tokens · 本机功德: ${merit}`
+        tokenBar.textContent = `⚡ 度化: ${formatTokenCount(tokenStats.todayTokens)} Tokens · 功德: ${merit}`
       }
     },
     triggerKnockEffect,

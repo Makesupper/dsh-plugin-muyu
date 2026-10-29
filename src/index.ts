@@ -1,6 +1,7 @@
 import type { Context } from './shims.js'
 import { Config, type MuyuConfig } from './config.js'
 import { MuyuService } from './services/muyu-service.js'
+import { registerMuyuClientApi } from './services/client-api.js'
 import { createMuyuTools } from './tools/index.js'
 
 export const name = 'muyu'
@@ -31,7 +32,14 @@ export function apply(ctx: Context, config: MuyuConfig = {}) {
     })
   }
 
-  // 3. 注册 DSH Tools，使用 ctx.effect 保留注册 disposer，防止 HMR 热重载时报重名冲突
+  // 3. 把同一份服务端功德簿暴露给前端挂件：窗口只读取/写入这里，不再维护第二本账。
+  if (typeof (ctx as any).inject === 'function') {
+    ;(ctx as any).inject(['webServer'], (webCtx: Context) => {
+      webCtx.effect(() => registerMuyuClientApi(webCtx.webServer, muyu))
+    })
+  }
+
+  // 4. 注册 DSH Tools，使用 ctx.effect 保留注册 disposer，防止 HMR 热重载时报重名冲突
   const tools = createMuyuTools(muyu)
   for (const tool of tools) {
     ctx.effect(() => {

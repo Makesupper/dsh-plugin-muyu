@@ -1,52 +1,63 @@
 /**
  * DSH Official Client Bundle entry
  * Complies with DSH lazy CJS model: window.__ModuleLoader__.load({ id, factory })
+ *
+ * Single-ledger design: the Host's merit_history.json is the only ledger.
+ * This bundle never computes tokens or merit locally; it reads /dsh-muyu/state
+ * and posts knocks/auto/sutra changes back to the Host. Token consumption on
+ * the Host therefore drives the widget animation through the polled state diff.
  */
 
-import { createMuyuFloatingPet, type MeritHistoryItem } from './widget-ui.js'
+import { createMuyuFloatingPet, type MeritHistoryItem, type WidgetOptions } from './widget-ui.js'
 import { MuyuWebAudioPlayer } from './sound-player.js'
 import { SutraSpeechSynthesizer } from './speech-synthesizer.js'
 import { allBooks } from '../data/sutras.js'
+import { formatTokenCount } from '../format.js'
 import type { MuyuSoundType } from '../types.js'
 
-const MAX_CLIENT_BURST_KNOCKS = 108
-
-export function getLocalDateKey(now: Date = new Date()): string {
-  const y = now.getFullYear()
-  const m = String(now.getMonth() + 1).padStart(2, '0')
-  const d = String(now.getDate()).padStart(2, '0')
-  return `${y}-${m}-${d}`
-}
-
-export function getLocalDisplayDate(now: Date = new Date()): string {
-  return now.toLocaleDateString('zh-CN')
-}
-
-export function computePendingAndKnocks(
-  pendingTokens: number,
-  deltaTokens: number,
-  tokensPerMerit: number = 10000,
-  maxKnocks: number = MAX_CLIENT_BURST_KNOCKS
-): { knocks: number; nextPending: number } {
-  const safePending = Number.isFinite(pendingTokens) && pendingTokens > 0 ? Math.floor(pendingTokens) : 0
-  const safeDelta = Number.isFinite(deltaTokens) && deltaTokens > 0 ? Math.round(deltaTokens) : 0
-  const safeStep = Number.isFinite(tokensPerMerit) && tokensPerMerit > 0 ? Math.floor(tokensPerMerit) : 10000
-  const total = safePending + safeDelta
-  const rawKnocks = Math.floor(total / safeStep)
-  const knocks = Math.min(maxKnocks, rawKnocks)
-  const nextPending = total - knocks * safeStep
-  return { knocks, nextPending }
-}
+const API_BASE = '/dsh-muyu'
+const POLL_INTERVAL_MS = 800
+const MAX_VISUAL_BURST = 12
+const LEGACY_MERIT_KEY = 'dsh_muyu_client_merit'
+const PREF_KEY = 'dsh_muyu_client_prefs'
 
 interface ClientPreferences {
   soundId: MuyuSoundType
-  bookId: string
   voiceId: string
   voiceEnabled: boolean
   rate: number
   pitch: number
   volume: number
+}
+
+interface ServerSentence {
+  id: number
+  text: string
+  bookId: string
+  bookTitle: string
+}
+
+interface ServerState {
+  todayMerit: number
+  totalMerit: number
+  todayTokens: number
+  totalTokens: number
+  pendingTokens: number
   tokensPerMerit: number
+  todayKey: string
+  bookId: string
+  bookTitle: string
+  currentSentence: ServerSentence
+  lastSentence: ServerSentence | null
+  chantSeq: number
+  auto: {
+    running: boolean
+    targetCount: number
+    currentCount: number
+    intervalMs: number
+    cycleTitle: string
+  }
+  records?: MeritHistoryItem[]
 }
 
 function buildExports(_require?: any) {
@@ -58,18 +69,13 @@ function buildExports(_require?: any) {
         return
       }
 
-      const STORAGE_KEY = 'dsh_muyu_client_merit'
-      const PREF_KEY = 'dsh_muyu_client_prefs'
-
       let prefs: ClientPreferences = {
         soundId: 'sandalwood',
-        bookId: 'heart_sutra',
         voiceId: '',
         voiceEnabled: true,
         rate: 0.72,
         pitch: 0.92,
-        volume: 1.0,
-        tokensPerMerit: 10000
+        volume: 1.0
       }
 
       try {
@@ -80,6 +86,8 @@ function buildExports(_require?: any) {
             prefs = { ...prefs, ...parsed }
           }
         }
+        // The old local merit ledger is obsolete: the Host ledger is authoritative now.
+        localStorage.removeItem(LEGACY_MERIT_KEY)
       } catch {}
 
       const savePrefs = () => {
@@ -99,195 +107,227 @@ function buildExports(_require?: any) {
       })
       speechSynth.enabled = prefs.voiceEnabled
 
-      let meritData = {
-        todayMerit: 0,
-        totalMerit: 0,
-        todayTokens: 0,
-        totalTokens: 0,
-        pendingTokens: 0,
-        records: [] as MeritHistoryItem[],
-        lastDateKey: getLocalDateKey()
-      }
+      const transport = (globalThis as any).__DSH_TRANSPORT__
+      const fetchImpl: any =
+        transport && typeof transport.fetch === 'function'
+          ? transport.fetch.bind(transport)
+          : typeof fetch === 'function'
+            ? fetch.bind(globalThis)
+            : undefined
 
-      try {
-        const saved = localStorage.getItem(STORAGE_KEY)
-        if (saved) {
-          const parsed = JSON.parse(saved)
-          if (parsed && typeof parsed === 'object') {
-            meritData = { ...meritData, ...parsed }
-            const todayKey = getLocalDateKey()
-            // Reconcile day rollover using unified local YYYY-MM-DD key
-            if (meritData.lastDateKey !== todayKey) {
-              const todayRecord = meritData.records.find(r => r.dateKey === todayKey)
-              meritData.todayMerit = todayRecord?.count ?? 0
-              meritData.todayTokens = todayRecord?.tokens ?? 0
-              meritData.lastDateKey = todayKey
-            }
-          }
-        }
-      } catch {}
-
-      const reconcileDayRollover = () => {
-        const todayKey = getLocalDateKey()
-        if (meritData.lastDateKey !== todayKey) {
-          const todayRecord = meritData.records.find(r => r.dateKey === todayKey)
-          meritData.todayMerit = todayRecord?.count ?? 0
-          meritData.todayTokens = todayRecord?.tokens ?? 0
-          meritData.lastDateKey = todayKey
-        }
-      }
-
-      const saveMerit = (count: number = 1, tokens: number = 0) => {
-        reconcileDayRollover()
-        const now = new Date()
-        const dateKey = getLocalDateKey(now)
-        const displayDate = getLocalDisplayDate(now)
-
-        const safeCount = Number.isFinite(count) && count > 0 ? Math.floor(count) : 0
-        const safeTokens = Number.isFinite(tokens) && tokens > 0 ? Math.round(tokens) : 0
-
-        meritData.todayMerit += safeCount
-        meritData.totalMerit += safeCount
-        if (safeTokens > 0) {
-          meritData.todayTokens = (meritData.todayTokens || 0) + safeTokens
-          meritData.totalTokens = (meritData.totalTokens || 0) + safeTokens
-        }
-
-        let rec = meritData.records.find(r => r.dateKey === dateKey)
-        if (!rec) {
-          rec = { dateKey, displayDate, count: 0, tokens: 0 }
-          meritData.records.unshift(rec)
-        }
-        rec.count += safeCount
-        if (safeTokens > 0) {
-          rec.tokens = (rec.tokens || 0) + safeTokens
-        }
-        try {
-          localStorage.setItem(STORAGE_KEY, JSON.stringify(meritData))
-        } catch {}
-      }
-
-      let currentBook = allBooks.find(b => b.id === prefs.bookId) || allBooks[0]
-      let currentSentenceIndex = 0
-      let isAuto = false
-      let autoTimer: ReturnType<typeof setInterval> | null = null
+      let serverState: ServerState | null = null
+      let historyRecords: MeritHistoryItem[] = []
+      let currentBook = allBooks[0]
+      let lastMerit = -1
+      let lastTokens = -1
+      let lastChantSeq = -1
+      let displaySentenceText: string | null = null
+      let pendingSentenceText: string | null = null
+      let speechGeneration = 0
+      let alive = true
+      let pollTimer: ReturnType<typeof setInterval> | null = null
+      let pollInFlight = false
+      let historyInFlight = false
       const burstTimers = new Set<ReturnType<typeof setTimeout>>()
 
-      const clearBurstTimers = () => {
-        for (const t of burstTimers) {
-          clearTimeout(t)
+      async function apiRequest(path: string, init: { method?: string; body?: string } = {}): Promise<any> {
+        if (!fetchImpl) throw new Error('fetch unavailable')
+        const headers: Record<string, string> = { accept: 'application/json' }
+        if (init.body !== undefined) {
+          headers['content-type'] = 'application/json'
         }
-        burstTimers.clear()
+        const response = await fetchImpl(`${API_BASE}${path}`, {
+          method: init.method || 'GET',
+          headers,
+          body: init.body,
+          credentials: 'same-origin'
+        })
+        if (!response || !response.ok) {
+          throw new Error(`muyu api HTTP ${response?.status ?? '???'}`)
+        }
+        return (await response.json()) as ServerState
       }
 
-      const updatePetView = () => {
+      async function refreshHistory(): Promise<void> {
+        if (historyInFlight) return
+        historyInFlight = true
+        try {
+          const next = await apiRequest('/state?history=1')
+          if (Array.isArray(next.records)) {
+            historyRecords = next.records
+          }
+        } catch {
+        } finally {
+          historyInFlight = false
+        }
+      }
+
+      function updatePetView(): void {
+        const state = serverState
+        const sentence = displaySentenceText || state?.currentSentence?.text || currentBook.sentences[0] || ''
         pet.update(
-          meritData.todayMerit,
-          currentBook.sentences[currentSentenceIndex],
-          isAuto,
-          { todayTokens: meritData.todayTokens || 0, totalTokens: meritData.totalTokens || 0 }
+          state?.todayMerit ?? 0,
+          sentence,
+          state?.auto?.running ?? false,
+          { todayTokens: state?.todayTokens ?? 0, totalTokens: state?.totalTokens ?? 0 }
         )
       }
 
-      const chantNextSentence = () => {
-        const sentence = currentBook.sentences[currentSentenceIndex]
-        speechSynth.chantSentence(sentence, () => {
-          currentSentenceIndex = (currentSentenceIndex + 1) % currentBook.sentences.length
-          updatePetView()
-          if (isAuto) {
-            chantNextSentence()
-          }
+      function speak(text: string | undefined, onEnd?: () => void): void {
+        if (!text || !speechSynth.enabled) {
+          onEnd?.()
+          return
+        }
+        if (speechSynth.isSpeaking()) return
+        const generation = ++speechGeneration
+        speechSynth.chantSentence(text, () => {
+          if (generation !== speechGeneration || !alive) return
+          onEnd?.()
         })
       }
 
-      const handleKnock = () => {
-        saveMerit(1, 0)
-        audioPlayer.playWoodenSound()
-        updatePetView()
-
-        if (!speechSynth.isSpeaking()) {
-          chantNextSentence()
+      function finishSpeechDisplay(): void {
+        if (!alive) return
+        if (pendingSentenceText !== null) {
+          displaySentenceText = pendingSentenceText
+          updatePetView()
         }
       }
 
-      // Client-side helper to feed token counts into the floating widget with smooth burst throttling
-      const feedTokensToClientPet = (tokens: number, tokensPerMerit: number = prefs.tokensPerMerit || 10000) => {
-        const safeTokens = Number.isFinite(tokens) && tokens > 0 ? Math.round(tokens) : 0
-        if (safeTokens <= 0) return
-
-        const { knocks, nextPending } = computePendingAndKnocks(
-          meritData.pendingTokens || 0,
-          safeTokens,
-          tokensPerMerit,
-          MAX_CLIENT_BURST_KNOCKS
-        )
-        meritData.pendingTokens = nextPending
-
-        saveMerit(0, safeTokens)
-        if (knocks <= 0) {
-          updatePetView()
-          return
-        }
-
-        const safeStep = Number.isFinite(tokensPerMerit) && tokensPerMerit > 0 ? Math.floor(tokensPerMerit) : 10000
-        for (let i = 0; i < knocks; i++) {
+      function animateMerit(delta: number, tokenDelta: number): void {
+        const count = Math.min(delta, MAX_VISUAL_BURST)
+        for (let i = 0; i < count; i++) {
           const timer = setTimeout(() => {
             burstTimers.delete(timer)
-            saveMerit(1, 0)
+            if (!alive) return
             audioPlayer.playWoodenSound()
             pet.animateKnock()
-            pet.triggerKnockEffect(`⚡ Token +${safeStep.toLocaleString()} · 功德 +1`)
-            updatePetView()
-            if (!speechSynth.isSpeaking()) {
-              chantNextSentence()
+            if (i === 0) {
+              const label =
+                tokenDelta > 0
+                  ? `⚡ ${formatTokenCount(tokenDelta)} Tokens · 功德 +${delta}`
+                  : `功德 +${delta}`
+              pet.triggerKnockEffect(label)
+            } else {
+              pet.triggerKnockEffect('功德 +1')
             }
+            updatePetView()
           }, i * 130)
+          burstTimers.add(timer)
+        }
+        if (delta > count) {
+          const timer = setTimeout(() => {
+            burstTimers.delete(timer)
+            if (!alive) return
+            pet.triggerKnockEffect(`功德 +${delta}`)
+          }, 450)
           burstTimers.add(timer)
         }
       }
 
-      if (typeof window !== 'undefined') {
-        ;(window as any).__dsh_muyu_feed_tokens__ = feedTokensToClientPet
+      function applyState(
+        next: ServerState,
+        opts: {
+          animate?: boolean
+          speak?: boolean
+          speakSentence?: ServerSentence
+          resetDisplay?: boolean
+          mergeHistory?: boolean
+        } = {}
+      ): void {
+        if (!alive || !next) return
+        const prevMerit = lastMerit
+        const prevTokens = lastTokens
+        const chantChanged = typeof next.chantSeq === 'number' && next.chantSeq !== lastChantSeq
+        const bookChanged = !!next.bookId && next.bookId !== serverState?.bookId
+        serverState = next
+
+        if (next.bookId) {
+          widgetOptions.currentBookId = next.bookId
+          const book = allBooks.find(b => b.id === next.bookId)
+          if (book) currentBook = book
+        }
+        if (opts.mergeHistory && Array.isArray(next.records)) {
+          historyRecords = next.records
+        }
+
+        if (opts.animate && prevMerit >= 0 && next.todayMerit > prevMerit) {
+          animateMerit(next.todayMerit - prevMerit, Math.max(0, next.todayTokens - prevTokens))
+        }
+
+        lastMerit = next.todayMerit
+        lastTokens = next.todayTokens
+        lastChantSeq = next.chantSeq
+
+        const currentText = next.currentSentence?.text || ''
+        if (opts.speakSentence) {
+          // A manual knock: keep the spoken sentence in the bubble, then advance to the
+          // server's next sentence when that sentence finishes.
+          pendingSentenceText = currentText
+          if (!speechSynth.isSpeaking()) {
+            displaySentenceText = opts.speakSentence.text
+            speak(displaySentenceText, finishSpeechDisplay)
+          }
+        } else if (opts.speak && chantChanged) {
+          // Token/auto knocks: same pacing as a manual knock.
+          pendingSentenceText = currentText
+          if (!speechSynth.isSpeaking()) {
+            displaySentenceText = next.lastSentence?.text || currentText
+            speak(displaySentenceText, finishSpeechDisplay)
+          }
+        } else if (opts.resetDisplay || bookChanged || displaySentenceText === null) {
+          displaySentenceText = currentText
+          pendingSentenceText = currentText
+        }
+
+        updatePetView()
+        if (next.todayMerit !== prevMerit) {
+          void refreshHistory()
+        }
       }
 
-      const pet = createMuyuFloatingPet({
+      const widgetOptions: WidgetOptions = {
         sutraList: allBooks,
         currentBookId: currentBook.id,
         initialVoiceEnabled: prefs.voiceEnabled,
         getMeritRecords: () => ({
-          todayMerit: meritData.todayMerit,
-          totalMerit: meritData.totalMerit,
-          todayTokens: meritData.todayTokens || 0,
-          totalTokens: meritData.totalTokens || 0,
-          pendingTokens: meritData.pendingTokens || 0,
-          records: meritData.records
+          todayMerit: serverState?.todayMerit ?? 0,
+          totalMerit: serverState?.totalMerit ?? 0,
+          todayTokens: serverState?.todayTokens ?? 0,
+          totalTokens: serverState?.totalTokens ?? 0,
+          pendingTokens: serverState?.pendingTokens ?? 0,
+          records: historyRecords
         }),
         onKnock: () => {
-          handleKnock()
+          audioPlayer.playWoodenSound()
+          void (async () => {
+            try {
+              const res = await apiRequest('/knock', {
+                method: 'POST',
+                body: JSON.stringify({ count: 1 })
+              })
+              applyState(res.state, {
+                animate: false,
+                speakSentence: res.knock?.currentSentence
+              })
+            } catch {
+              pet.triggerKnockEffect('服务端未响应')
+            }
+          })()
         },
         onToggleAuto: () => {
-          isAuto = !isAuto
-          if (isAuto) {
-            handleKnock()
-            pet.triggerKnockEffect('功德 +1')
-            autoTimer = setInterval(() => {
-              saveMerit(1, 0)
-              audioPlayer.playWoodenSound()
-              pet.animateKnock()
-              pet.triggerKnockEffect('功德 +1')
-              updatePetView()
-            }, 1300)
-            if (!speechSynth.isSpeaking()) {
-              chantNextSentence()
+          const action = serverState?.auto?.running ? 'stop' : 'start'
+          void (async () => {
+            try {
+              const res = await apiRequest('/auto', {
+                method: 'POST',
+                body: JSON.stringify({ action })
+              })
+              applyState(res.state, { animate: false })
+            } catch {
+              pet.triggerKnockEffect('服务端未响应')
             }
-          } else {
-            if (autoTimer) {
-              clearInterval(autoTimer)
-              autoTimer = null
-            }
-            speechSynth.stop()
-          }
-          updatePetView()
+          })()
         },
         onToggleVoice: (enabled: boolean) => {
           prefs.voiceEnabled = enabled
@@ -298,18 +338,19 @@ function buildExports(_require?: any) {
           }
         },
         onSelectSutra: (bookId: string) => {
-          const found = allBooks.find(b => b.id === bookId)
-          if (found) {
-            currentBook = found
-            prefs.bookId = found.id
-            savePrefs()
-            currentSentenceIndex = 0
-            speechSynth.stop()
-            updatePetView()
-            if (isAuto) {
-              chantNextSentence()
+          widgetOptions.currentBookId = bookId
+          void (async () => {
+            try {
+              const res = await apiRequest('/sutra', {
+                method: 'POST',
+                body: JSON.stringify({ bookId })
+              })
+              applyState(res.state, { animate: false, resetDisplay: true })
+            } catch {
+              pet.triggerKnockEffect('切换失败')
+              void refreshStateSoon()
             }
-          }
+          })()
         },
         getSoundPresets: () => {
           return audioPlayer.getSoundPresets()
@@ -335,14 +376,58 @@ function buildExports(_require?: any) {
           savePrefs()
           if (speechSynth.isSpeaking()) {
             speechSynth.stop()
-            chantNextSentence()
+            speak(serverState?.lastSentence?.text || serverState?.currentSentence?.text)
           }
+        },
+        onOpenMerit: () => {
+          void refreshHistory()
         }
-      })
+      }
+
+      const pet = createMuyuFloatingPet(widgetOptions)
+
+      async function refreshStateSoon(): Promise<void> {
+        try {
+          const next = await apiRequest('/state')
+          applyState(next, { animate: false, resetDisplay: true })
+        } catch {}
+      }
+
+      async function poll(): Promise<void> {
+        if (!alive || pollInFlight) return
+        pollInFlight = true
+        try {
+          const next = await apiRequest('/state')
+          applyState(next, { animate: true, speak: true })
+        } catch {
+          // Transient Host restart / route not mounted yet; keep the last good state.
+        } finally {
+          pollInFlight = false
+        }
+      }
+
+      function startPolling(): void {
+        if (pollTimer !== null || !alive) return
+        pollTimer = setInterval(() => {
+          void poll()
+        }, POLL_INTERVAL_MS)
+        void poll()
+      }
+
+      async function boot(): Promise<void> {
+        try {
+          const next = await apiRequest('/state?history=1')
+          applyState(next, { animate: false, mergeHistory: true, resetDisplay: true })
+        } catch (error) {
+          console.warn('[dsh-plugin-muyu:client] 服务端功德簿暂不可用，稍后自动重试', error)
+        }
+        startPolling()
+      }
 
       const mount = () => {
         pet.mount(document.body)
         updatePetView()
+        void boot()
       }
 
       if (document.readyState === 'loading') {
@@ -351,26 +436,26 @@ function buildExports(_require?: any) {
         mount()
       }
 
-      // Full cleanup on unload / HMR reload
       const cleanup = () => {
-        if (autoTimer) {
-          clearInterval(autoTimer)
-          autoTimer = null
+        alive = false
+        if (pollTimer !== null) {
+          clearInterval(pollTimer)
+          pollTimer = null
         }
-        clearBurstTimers()
+        for (const timer of burstTimers) {
+          clearTimeout(timer)
+        }
+        burstTimers.clear()
         speechSynth.dispose()
         audioPlayer.dispose()
         pet.unmount()
-        if (typeof window !== 'undefined' && (window as any).__dsh_muyu_feed_tokens__ === feedTokensToClientPet) {
-          delete (window as any).__dsh_muyu_feed_tokens__
-        }
       }
 
       if (ctx && typeof ctx.effect === 'function') {
         ctx.effect(() => cleanup)
       }
 
-      console.log('[dsh-plugin-muyu:client] 3D 木鱼挂件已完全加载（包含木槌交互、功德簿、经典宝库、三种音色与连贯诵经）')
+      console.log('[dsh-plugin-muyu:client] 木鱼挂件已加载：账本与服务端 /dsh-muyu/state 同源，Token 度化实时同步')
     }
   }
 }

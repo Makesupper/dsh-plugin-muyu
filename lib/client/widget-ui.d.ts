@@ -34,6 +34,7 @@ export interface WidgetOptions {
     onSelectSutra?: (bookId: string) => void;
     onSelectVoice?: (voiceId: string) => void;
     onSelectSound?: (soundId: MuyuSoundType) => void;
+    onOpenMerit?: () => void;
     getVoiceList?: () => VoiceItem[];
     getCurrentVoiceId?: () => string;
     getSoundPresets?: () => SoundPresetOption[];

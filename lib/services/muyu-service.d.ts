@@ -1,5 +1,5 @@
 import type { Context } from '../shims.js';
-import type { MuyuSoundType, KnockResult, AutoKnockStatus, MeritStats, SutraBook, TokenConsumeResult } from '../types.js';
+import type { MuyuSoundType, KnockResult, AutoKnockStatus, MeritStats, SutraBook, SutraSentence, TokenConsumeResult } from '../types.js';
 import type { MuyuConfig } from '../config.js';
 export declare class MuyuService {
     ctx: Context;
@@ -10,6 +10,10 @@ export declare class MuyuService {
     private autoKnockTimer;
     private autoStatus;
     private assetsDir;
+    /** Last sentence actually chanted by a knock, used by the widget to speak the right line. */
+    private lastChantedSentence;
+    /** Monotonic counter incremented once per knock, so the widget can detect new chants. */
+    private chantSeq;
     constructor(ctx: Context, config?: MuyuConfig);
     getSoundType(): MuyuSoundType;
     setSoundType(type: MuyuSoundType): boolean;
@@ -37,6 +41,8 @@ export declare class MuyuService {
     getSutra(): SutraBook;
     getAllSutras(): SutraBook[];
     selectSutra(bookId: string): boolean;
-    getCurrentSentence(): import("../types.js").SutraSentence;
+    getCurrentSentence(): SutraSentence;
+    getLastChantedSentence(): SutraSentence | null;
+    getChantSeq(): number;
 }
 //# sourceMappingURL=muyu-service.d.ts.map

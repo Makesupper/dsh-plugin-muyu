@@ -12,7 +12,8 @@ import { soundLibrary } from '../lib/data/sounds.js'
 import { MuyuService } from '../lib/services/muyu-service.js'
 import { createMuyuTools } from '../lib/tools/index.js'
 import { apply, Config } from '../lib/index.js'
-import { getLocalDateKey, computePendingAndKnocks } from '../lib/client/bundle.js'
+import { buildMuyuState, createMuyuRouteHandlers, registerMuyuClientApi } from '../lib/services/client-api.js'
+import { formatTokenCount } from '../lib/format.js'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 let testCounter = 0
@@ -35,6 +36,61 @@ function cleanupTmpFiles(baseFile) {
         fs.unlinkSync(path.join(dir, entry))
       } catch {}
     }
+  }
+}
+
+function makeMockResponse() {
+  let resolveDone
+  const done = new Promise(resolve => {
+    resolveDone = resolve
+  })
+  return {
+    statusCode: 0,
+    headers: {},
+    body: '',
+    done,
+    writeHead(status, headers) {
+      this.statusCode = status
+      this.headers = headers || {}
+    },
+    end(body) {
+      this.body = body || ''
+      resolveDone()
+    }
+  }
+}
+
+function makeMockRequest(method, url, body) {
+  const listeners = { data: [], end: [], error: [] }
+  const req = {
+    method,
+    url,
+    headers: {},
+    on(event, callback) {
+      ;(listeners[event] ||= []).push(callback)
+      return req
+    },
+    destroy() {}
+  }
+  setTimeout(() => {
+    if (body !== undefined) {
+      const buf = Buffer.from(body)
+      for (const callback of listeners.data) callback(buf)
+    }
+    for (const callback of listeners.end) callback()
+  }, 0)
+  return req
+}
+
+async function invokeRoute(handler, method, url, body) {
+  const req = makeMockRequest(method, url, body)
+  const res = makeMockResponse()
+  await handler(req, res)
+  await res.done
+  return {
+    status: res.statusCode,
+    headers: res.headers,
+    json: res.body ? JSON.parse(res.body) : null
   }
 }
 
@@ -220,6 +276,8 @@ test('MuyuService & DSH Tools - 修持流程、session/event 真实钩子与非�
     // 验证 session/event + assistant/message.data.usage 真实监听（忽略 assistant/attempt）
     const registeredTools = []
     const eventListeners = {}
+    const injected = []
+    const routes = []
     const cordisCtx = {
       services: {},
       provide(k, v) {
@@ -232,6 +290,18 @@ test('MuyuService & DSH Tools - 修持流程、session/event 真实钩子与非�
       effect(fn) {
         return fn()
       },
+      inject(names, callback) {
+        injected.push(names)
+        callback({
+          ...this,
+          webServer: {
+            register(route) {
+              routes.push(route)
+              return () => {}
+            }
+          }
+        })
+      },
       tools: {
         register(tool) {
           registeredTools.push(tool)
@@ -243,6 +313,14 @@ test('MuyuService & DSH Tools - 修持流程、session/event 真实钩子与非�
     assert.ok(cordisCtx.services.muyu)
     assert.equal(registeredTools.length, 6)
     assert.equal(typeof eventListeners['session/event'], 'function')
+
+    // 验证 Host 侧通过可选 webServer 注入注册挂件 API，而不影响无 Web 的 profile
+    assert.deepEqual(injected, [['webServer']])
+    assert.deepEqual(
+      routes.map(route => route.path),
+      ['/dsh-muyu/state', '/dsh-muyu/knock', '/dsh-muyu/auto', '/dsh-muyu/sutra']
+    )
+    assert.ok(routes.every(route => route.kind === 'exact'))
 
     const beforeMerit = cordisCtx.services.muyu.getMeritStats().todayMerit
     // 触发 assistant/attempt 应被忽略
@@ -334,23 +412,138 @@ test('Token 驱动敲木鱼 - 跨重启持久化、100万Token单次封顶108敲
   }
 })
 
-test('客户端纯函数与打包产物 lib/client.js 完整性验证', () => {
-  const d = new Date(2026, 9, 29) // Local 2026-10-29
-  assert.equal(getLocalDateKey(d), '2026-10-29')
+test('Client API - 前端与服务端工具共用同一本账，并驱动挂件状态', async () => {
+  const tmpFile = makeUniqueTmpFile('client_api')
+  try {
+    const fakeCtx = {
+      provide: () => {},
+      effect: fn => fn(),
+      tools: { register: () => () => {} }
+    }
+    const muyu = new MuyuService(fakeCtx, {
+      storagePath: tmpFile,
+      tokensPerMerit: 10000,
+      tokenKnockEnabled: true
+    })
+    const handlers = createMuyuRouteHandlers(muyu)
 
-  const calc1 = computePendingAndKnocks(4000, 8000, 10000, 108)
-  assert.equal(calc1.knocks, 1)
-  assert.equal(calc1.nextPending, 2000)
+    // 1. 初始状态：同一账本、当前经文、令牌换算阈值
+    const initial = await invokeRoute(handlers.state, 'GET', '/dsh-muyu/state')
+    assert.equal(initial.status, 200)
+    assert.equal(initial.json.todayMerit, 0)
+    assert.equal(initial.json.todayTokens, 0)
+    assert.equal(initial.json.tokensPerMerit, 10000)
+    assert.equal(initial.json.bookId, 'heart_sutra')
+    assert.equal(initial.json.currentSentence.bookId, 'heart_sutra')
+    assert.equal('records' in initial.json, false)
 
-  const calcCap = computePendingAndKnocks(0, 1500000, 10000, 108)
-  assert.equal(calcCap.knocks, 108)
-  assert.equal(calcCap.nextPending, 420000)
+    // 2. 仅在显式请求历史时返回按日明细
+    const withHistory = await invokeRoute(handlers.state, 'GET', '/dsh-muyu/state?history=1')
+    assert.ok(Array.isArray(withHistory.json.records))
+    assert.ok(withHistory.json.records.length >= 1)
 
-  // 验证 lib/client.js 沙箱加载与无顶层 import/export
+    // 3. 前端敲击直接写入服务端账本，并返回本次诵读句
+    const knock = await invokeRoute(handlers.knock, 'POST', '/dsh-muyu/knock', JSON.stringify({ count: 1 }))
+    assert.equal(knock.status, 200)
+    assert.equal(knock.json.state.todayMerit, 1)
+    assert.equal(knock.json.state.totalMerit, 1)
+    assert.ok(knock.json.knock.currentSentence.text.length > 0)
+    assert.equal(muyu.getMeritStats().todayMerit, 1)
+
+    // 4. 自动修持由服务端持有，前端只发开始/停止
+    const autoStart = await invokeRoute(
+      handlers.auto,
+      'POST',
+      '/dsh-muyu/auto',
+      JSON.stringify({ action: 'start', intervalMs: 200 })
+    )
+    assert.equal(autoStart.json.state.auto.running, true)
+    const autoStop = await invokeRoute(handlers.auto, 'POST', '/dsh-muyu/auto', JSON.stringify({ action: 'stop' }))
+    assert.equal(autoStop.json.state.auto.running, false)
+
+    // 5. 经文切换同步到服务端账本
+    const sutra = await invokeRoute(
+      handlers.sutra,
+      'POST',
+      '/dsh-muyu/sutra',
+      JSON.stringify({ bookId: 'vajra_sutra' })
+    )
+    assert.equal(sutra.status, 200)
+    assert.equal(sutra.json.state.bookId, 'vajra_sutra')
+    assert.equal(sutra.json.state.currentSentence.bookId, 'vajra_sutra')
+    const badSutra = await invokeRoute(handlers.sutra, 'POST', '/dsh-muyu/sutra', JSON.stringify({ bookId: 'nope' }))
+    assert.equal(badSutra.status, 400)
+
+    // 6. 只读状态不接受 POST
+    const wrongMethod = await invokeRoute(handlers.state, 'POST', '/dsh-muyu/state', '{}')
+    assert.equal(wrongMethod.status, 405)
+
+    // 7. Token 消耗仍走同一账本；state 能立即读到 token 与功德增量
+    muyu.consumeTokens(25000)
+    const afterTokens = await invokeRoute(handlers.state, 'GET', '/dsh-muyu/state')
+    assert.equal(afterTokens.json.todayTokens, 25000)
+    assert.equal(afterTokens.json.todayMerit, 3) // 1 次手敲 + 2 次 Token 度化
+    assert.equal(afterTokens.json.pendingTokens, 5000)
+    assert.equal(afterTokens.json.chantSeq, 3)
+
+    // 8. 注册函数只挂 4 条精确路由，并能在卸载时全部撤销
+    const routes = []
+    const webServer = {
+      register(route) {
+        routes.push(route)
+        return () => {
+          const index = routes.indexOf(route)
+          if (index >= 0) routes.splice(index, 1)
+        }
+      }
+    }
+    const dispose = registerMuyuClientApi(webServer, muyu)
+    assert.deepEqual(
+      routes.map(route => route.path),
+      ['/dsh-muyu/state', '/dsh-muyu/knock', '/dsh-muyu/auto', '/dsh-muyu/sutra']
+    )
+    assert.ok(routes.every(route => route.kind === 'exact'))
+    dispose()
+    assert.equal(routes.length, 0)
+
+    // 9. buildMuyuState 是纯快照，能同时给出账本与经文进度
+    const snapshot = buildMuyuState(muyu, true)
+    assert.equal(snapshot.todayTokens, 25000)
+    assert.equal(snapshot.bookId, 'vajra_sutra')
+    assert.ok(Array.isArray(snapshot.records))
+    assert.ok(snapshot.lastSentence)
+  } finally {
+    cleanupTmpFiles(tmpFile)
+  }
+})
+
+test('Token 显示单位 - 1M 以上用 M，千位用 k', () => {
+  assert.equal(formatTokenCount(0), '0')
+  assert.equal(formatTokenCount(999), '999')
+  assert.equal(formatTokenCount(1000), '1k')
+  assert.equal(formatTokenCount(1500), '1.5k')
+  assert.equal(formatTokenCount(12345), '12.3k')
+  assert.equal(formatTokenCount(999499), '999k')
+  assert.equal(formatTokenCount(999999), '1M')
+  assert.equal(formatTokenCount(1000000), '1M')
+  assert.equal(formatTokenCount(1234567), '1.2M')
+  assert.equal(formatTokenCount(29634326), '29.6M')
+})
+
+test('客户端打包产物 lib/client.js 完整性与单一账本接线', () => {
   const clientJsPath = path.resolve(__dirname, '../lib/client.js')
   const clientCode = fs.readFileSync(clientJsPath, 'utf-8')
   assert.equal(/(^|\n)\s*import\s+/.test(clientCode), false)
   assert.equal(/(^|\n)\s*export\s+/.test(clientCode), false)
+
+  // 单一账本：客户端不得再维护本地 Token 折算/功德写入，也不再暴露旧的全局部件。
+  assert.equal(clientCode.includes('__dsh_muyu_feed_tokens__'), false)
+  assert.equal(clientCode.includes('computePendingAndKnocks'), false)
+  assert.equal(clientCode.includes("const API_BASE = '/dsh-muyu'"), true)
+  assert.equal(clientCode.includes("apiRequest('/state"), true)
+  assert.equal(clientCode.includes("apiRequest('/knock'"), true)
+  assert.equal(clientCode.includes("apiRequest('/auto'"), true)
+  assert.equal(clientCode.includes("apiRequest('/sutra'"), true)
 
   let registered = null
   vm.runInNewContext(clientCode, {
@@ -370,4 +563,150 @@ test('客户端纯函数与打包产物 lib/client.js 完整性验证', () => {
   assert.equal(pluginExports.name, 'muyu-client')
   assert.deepEqual([...pluginExports.inject], ['slots'])
   assert.equal(typeof pluginExports.apply, 'function')
+})
+
+test('客户端挂件轮询服务端账本并触发 Token 功德动画', async () => {
+  const created = []
+  function makeEl(tag = 'div') {
+    const el = {
+      tagName: String(tag).toUpperCase(),
+      id: '',
+      className: '',
+      type: '',
+      title: '',
+      textContent: '',
+      children: [],
+      style: {},
+      dataset: {},
+      classList: { add() {}, remove() {}, toggle() {}, contains() { return false } },
+      appendChild(child) { this.children.push(child); return child },
+      replaceChildren() { this.children.length = 0 },
+      addEventListener() {},
+      removeEventListener() {},
+      setAttribute() {},
+      getAttribute() { return null },
+      getBoundingClientRect() { return { left: 0, top: 0, width: 120, height: 120, right: 120, bottom: 120 } },
+      remove() {},
+      querySelector() { return null },
+      querySelectorAll() { return [] },
+      focus() {},
+      blur() {}
+    }
+    created.push(el)
+    return el
+  }
+  const body = makeEl('body')
+  const documentStub = {
+    readyState: 'complete',
+    body,
+    createElement: tag => makeEl(tag),
+    getElementById: () => null,
+    addEventListener() {},
+    removeEventListener() {}
+  }
+  const localStorageStub = {
+    store: new Map(),
+    getItem(key) { return this.store.has(key) ? this.store.get(key) : null },
+    setItem(key, value) { this.store.set(key, String(value)) },
+    removeItem(key) { this.store.delete(key) }
+  }
+  const windowStub = {
+    addEventListener() {},
+    removeEventListener() {},
+    setTimeout,
+    clearTimeout,
+    setInterval,
+    clearInterval
+  }
+  function serverState(merit, tokens) {
+    const sentence = {
+      id: merit % 14,
+      text: '观自在菩萨，行深般若波罗蜜多时。',
+      bookId: 'heart_sutra',
+      bookTitle: '般若波罗蜜多心经'
+    }
+    return {
+      todayMerit: merit,
+      totalMerit: merit,
+      todayTokens: tokens,
+      totalTokens: tokens,
+      pendingTokens: tokens % 10000,
+      tokensPerMerit: 10000,
+      todayKey: '2026-10-29',
+      bookId: 'heart_sutra',
+      bookTitle: '般若波罗蜜多心经',
+      currentSentence: sentence,
+      lastSentence: sentence,
+      chantSeq: merit,
+      auto: { running: false, targetCount: 0, currentCount: 0, intervalMs: 1200, cycleTitle: '无尽修持' },
+      records: []
+    }
+  }
+  let stateCalls = 0
+  const fetchStub = async url => {
+    const target = String(url)
+    if (target.includes('history=1')) {
+      return { ok: true, json: async () => ({ ...serverState(0, 0), records: [] }) }
+    }
+    if (target.endsWith('/state')) {
+      stateCalls += 1
+      return { ok: true, json: async () => (stateCalls <= 1 ? serverState(0, 0) : serverState(1, 12000)) }
+    }
+    return { ok: false, status: 404, json: async () => ({}) }
+  }
+
+  const sandbox = {
+    window: windowStub,
+    document: documentStub,
+    localStorage: localStorageStub,
+    fetch: fetchStub,
+    console,
+    setTimeout,
+    clearTimeout,
+    setInterval,
+    clearInterval,
+    queueMicrotask,
+    Promise,
+    Object,
+    Array,
+    Set,
+    Map,
+    JSON,
+    Date,
+    Math,
+    Number,
+    String,
+    Boolean,
+    Error,
+    RegExp,
+    Symbol,
+    WeakMap
+  }
+  sandbox.globalThis = sandbox
+
+  const clientCode = fs.readFileSync(path.resolve(__dirname, '../lib/client.js'), 'utf-8')
+  let entry = null
+  sandbox.window.__ModuleLoader__ = { load(value) { entry = value } }
+  vm.runInNewContext(clientCode, sandbox)
+
+  const cleanups = []
+  const ctx = {
+    effect(fn) {
+      const cleanup = fn()
+      if (typeof cleanup === 'function') cleanups.push(cleanup)
+      return () => {}
+    }
+  }
+  entry.factory().apply(ctx)
+
+  await new Promise(resolve => setTimeout(resolve, 1400))
+
+  const tokenBar = created.find(el => typeof el.textContent === 'string' && el.textContent.includes('度化'))
+  const sparks = created.filter(el => typeof el.textContent === 'string' && el.textContent.includes('功德 +'))
+  assert.ok(tokenBar, 'token bar should be rendered')
+  assert.ok(tokenBar.textContent.includes('12k Tokens'), tokenBar.textContent)
+  assert.ok(tokenBar.textContent.includes('功德: 1'), tokenBar.textContent)
+  assert.ok(sparks.some(el => el.textContent.includes('Tokens')), 'Token merit should trigger a knock effect')
+
+  for (const cleanup of cleanups) cleanup()
 })
