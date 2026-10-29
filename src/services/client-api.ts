@@ -9,8 +9,10 @@ import type { AutoKnockStatus, DailyMeritRecord, SutraSentence } from '../types.
  * second (localStorage) merit ledger on the client.
  */
 export const MUYU_API_PREFIX = '/dsh-muyu'
+export const MUYU_API_VERSION = 2
 
 export interface MuyuClientState {
+  apiVersion: number
   todayMerit: number
   totalMerit: number
   todayTokens: number
@@ -50,6 +52,7 @@ export function buildMuyuState(muyu: MuyuService, includeHistory: boolean = fals
   const stats = muyu.getMeritStats()
   const book = muyu.getSutra()
   return {
+    apiVersion: MUYU_API_VERSION,
     todayMerit: stats.todayMerit,
     totalMerit: stats.totalMerit,
     todayTokens: stats.todayTokens,

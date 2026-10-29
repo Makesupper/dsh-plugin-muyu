@@ -35,6 +35,7 @@ export interface WidgetOptions {
     onSelectSutra?: (bookId: string) => void;
     getTokensPerMerit?: () => number;
     onSetTokensPerMerit?: (value: number) => Promise<boolean> | boolean | void;
+    isTokensPerMeritSupported?: () => boolean;
     onSelectVoice?: (voiceId: string) => void;
     onSelectSound?: (soundId: MuyuSoundType) => void;
     onOpenMerit?: () => void;

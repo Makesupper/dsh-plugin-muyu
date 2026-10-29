@@ -8,7 +8,9 @@ import type { AutoKnockStatus, DailyMeritRecord, SutraSentence } from '../types.
  * second (localStorage) merit ledger on the client.
  */
 export declare const MUYU_API_PREFIX = "/dsh-muyu";
+export declare const MUYU_API_VERSION = 2;
 export interface MuyuClientState {
+    apiVersion: number;
     todayMerit: number;
     totalMerit: number;
     todayTokens: number;

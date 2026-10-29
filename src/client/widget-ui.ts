@@ -42,6 +42,7 @@ export interface WidgetOptions {
   onSelectSutra?: (bookId: string) => void
   getTokensPerMerit?: () => number
   onSetTokensPerMerit?: (value: number) => Promise<boolean> | boolean | void
+  isTokensPerMeritSupported?: () => boolean
   onSelectVoice?: (voiceId: string) => void
   onSelectSound?: (soundId: MuyuSoundType) => void
   onOpenMerit?: () => void
@@ -840,6 +841,14 @@ export function createMuyuFloatingPet(options: WidgetOptions) {
       tipBox.style.cssText = 'font-size: 11px; color: #ffd88a; margin-bottom: 12px; padding: 6px 10px; background: rgba(212,163,89,0.15); border-radius: 6px; border: 1px solid rgba(212,163,89,0.3); line-height: 1.5;'
       tipBox.textContent = '正数：每 N Tokens 增加 1 功德；负数：每 |N| Tokens 扣 1 功德（趣味模式）。范围 ±1 ~ ±10,000,000。'
       modalBody.appendChild(tipBox)
+
+      if (options.isTokensPerMeritSupported && !options.isTokensPerMeritSupported()) {
+        tipBox.textContent = '当前 DSH Host 还未加载 Token 阈值接口。请重启 DSH 宿主后刷新页面，再调整阈值。'
+        tipBox.style.color = '#ff8a6a'
+        tipBox.style.background = 'rgba(255, 90, 60, 0.12)'
+        tipBox.style.borderColor = 'rgba(255, 120, 90, 0.4)'
+        return
+      }
 
       const currentLine = document.createElement('div')
       currentLine.style.cssText = 'font-size: 12px; color: #dfba78; margin-bottom: 8px;'

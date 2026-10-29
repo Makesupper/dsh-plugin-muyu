@@ -50,6 +50,7 @@ interface ServerState {
   bookTitle: string
   currentSentence: ServerSentence
   lastSentence: ServerSentence | null
+  apiVersion?: number
   chantSeq: number
   auto: {
     running: boolean
@@ -147,7 +148,9 @@ function buildExports(_require?: any) {
           credentials: 'same-origin'
         })
         if (!response || !response.ok) {
-          throw new Error(`muyu api HTTP ${response?.status ?? '???'}`)
+          const error: any = new Error(`muyu api HTTP ${response?.status ?? '???'}`)
+          error.status = response?.status
+          throw error
         }
         return (await response.json()) as ServerState
       }
@@ -308,6 +311,7 @@ function buildExports(_require?: any) {
         initialVoiceEnabled: prefs.voiceEnabled,
         initialSoundEnabled: prefs.soundEnabled,
         getTokensPerMerit: () => serverState?.tokensPerMerit ?? 10000,
+        isTokensPerMeritSupported: () => (serverState?.apiVersion ?? 1) >= 2,
         onSetTokensPerMerit: async (value: number) => {
           try {
             const res = await apiRequest('/tokens-per-merit', {
@@ -316,8 +320,11 @@ function buildExports(_require?: any) {
             })
             applyState(res.state, { animate: false })
             return true
-          } catch {
-            pet.triggerKnockEffect('阈值保存失败')
+          } catch (error: any) {
+            const status = Number(error?.status)
+            pet.triggerKnockEffect(
+              status === 404 || status === 405 ? 'Host 未加载阈值接口，请重启 DSH' : '阈值保存失败'
+            )
             return false
           }
         },
