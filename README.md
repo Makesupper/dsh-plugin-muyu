@@ -114,9 +114,30 @@ npm test        # 自动执行 pretest 构建并运行全部单元测试
 
 构建脚本优先使用 `$TSC`、本地或上级 `node_modules/.bin/tsc`；都没有时回退到 Node 的 `stripTypeScriptTypes`（实验性，生成 JS 与客户端 bundle，但不会刷新 `.d.ts`）。CI 中 `npm install` 会安装本地 `typescript`，因此正常走完整 `tsc`。
 
-### 2. 在 DeepSeek Harness 中加载
+### 2. 从 npm 安装（推荐）
 
-可通过 `--patch` 载入 `cordis.patch.yml`，或在 DSH Desktop 的 Profile（如 `~/.dsh/profiles/desktop`）中通过 Plugin Manager / `pnpm` 链接安装本目录：
+发布版已发布到 npm，直接走 DSH 自带的插件入口安装，不需要本地路径：
+
+**桌面端**：侧边栏「插件」→「添加插件」→ 输入 `dsh-plugin-muyu`（可带版本，如 `dsh-plugin-muyu@0.2.0`）→ 安装。管理器会在当前 profile 里执行 pnpm、写入依赖并选中 bundle，包内的 `cordis.patch.yml` 会自动插入挂件行。
+
+**CLI**：
+
+```sh
+dsh plugin --profile web add dsh-plugin-muyu
+```
+
+CLI 会把包加入 profile 依赖并自动选中 bundle；`desktop` profile 由桌面应用托管，推荐直接用「插件」页安装，或先完全退出 Desktop，再用安装包自带的命令：
+
+```sh
+"/Applications/DeepSeek Harness.app/Contents/Resources/runtime/cli/bin/dsh" \
+  plugin --profile desktop add dsh-plugin-muyu
+```
+
+> 插件是否出现在 DSH 入口取决于包内的 `dsh.bundle.patch` 声明，而非 npm 关键字：`package.json` 的 `dsh.bundle.patch` 指向 `cordis.patch.yml` 时才能被识别为可安装插件。
+
+### 3. 本地开发加载
+
+开发时仍可用 `--patch` 载入 `cordis.patch.yml`，或在 DSH Desktop 的 Profile（如 `~/.dsh/profiles/desktop`）中通过 Plugin Manager / `pnpm` 链接本目录：
 
 ```sh
 pnpm dsh web --patch ./dsh-plugin-muyu/cordis.patch.yml
